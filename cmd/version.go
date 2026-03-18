@@ -1,0 +1,25 @@
+package cmd
+
+import (
+	"fmt"
+	"runtime"
+
+	"github.com/spf13/cobra"
+)
+
+var version = "0.0.1"
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version information",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "getRelease %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH); err != nil {
+			return fmt.Errorf("writing version output: %w", err)
+		}
+		return nil
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(versionCmd)
+}
