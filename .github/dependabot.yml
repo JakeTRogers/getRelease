@@ -6,15 +6,21 @@ updates:
       interval: "monthly"
     commit-message:
       prefix: "ci(actions)"
+    cooldown:
+      default-days: 10
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "monthly"
     commit-message:
       prefix: "fix(deps)"
+    cooldown:
+      default-days: 10
   - package-ecosystem: "pre-commit"
     directory: "/"
     schedule:
       interval: "monthly"
     commit-message:
       prefix: "ci(hooks)"
+    cooldown:
+      default-days: 10
