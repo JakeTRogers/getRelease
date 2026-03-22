@@ -9,5 +9,5 @@ commitizen:
   use_shortcuts: true
   version: 1.0.0
   version_files:
-  - cmd/root.go
+  - cmd/version.go
   version_scheme: semver
