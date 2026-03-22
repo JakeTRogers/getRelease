@@ -174,6 +174,28 @@ func completeUpgradeTargetsFromRecords(records []history.Record, toComplete stri
 	return completions
 }
 
+func completeHistoryListSortValues(_ *cobra.Command, _ []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	options := []struct {
+		value       string
+		description string
+	}{
+		{value: historyListSortBinary, description: "sort by installed binary name"},
+		{value: historyListSortOwner, description: "sort by repository owner"},
+		{value: historyListSortRepo, description: "sort by repository name"},
+		{value: historyListSortInstalled, description: "sort by installed date, oldest first"},
+	}
+
+	completions := make([]cobra.Completion, 0, len(options))
+	for _, option := range options {
+		if !matchesCompletion(option.value, toComplete) {
+			continue
+		}
+		completions = append(completions, cobra.CompletionWithDesc(option.value, option.description))
+	}
+
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
 func describeRecordBinaries(rec history.Record) string {
 	var names []string
 	seen := make(map[string]struct{})

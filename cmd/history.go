@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -22,6 +23,13 @@ var historyCmd = &cobra.Command{
 	SilenceUsage: true,
 }
 
+const (
+	historyListSortOwner     = "owner"
+	historyListSortRepo      = "repo"
+	historyListSortBinary    = "binary"
+	historyListSortInstalled = "installed"
+)
+
 var historyListCmd = &cobra.Command{
 	Use:          "list",
 	Short:        "List all history records",
@@ -36,6 +44,13 @@ var historyListCmd = &cobra.Command{
 			return fmt.Errorf("loading history: %w", err)
 		}
 
+		format, _ := cmd.Flags().GetString("format")
+		sortValue, _ := cmd.Flags().GetString("sort")
+		sortBy, err := normalizeHistoryListSort(sortValue)
+		if err != nil {
+			return err
+		}
+
 		records := store.Records()
 		if len(records) == 0 {
 			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "No history records found."); err != nil {
@@ -44,7 +59,7 @@ var historyListCmd = &cobra.Command{
 			return nil
 		}
 
-		format, _ := cmd.Flags().GetString("format")
+		records = sortHistoryRecords(records, sortBy)
 		if format == "json" {
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			enc.SetIndent("", "  ")
@@ -71,6 +86,166 @@ var historyListCmd = &cobra.Command{
 		}
 		return w.Flush()
 	},
+}
+
+func normalizeHistoryListSort(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case historyListSortOwner, historyListSortRepo, historyListSortBinary, historyListSortInstalled:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("invalid sort value %q: must be one of owner, repo, binary, installed", value)
+	}
+}
+
+func sortHistoryRecords(records []history.Record, sortBy string) []history.Record {
+	sorted := make([]history.Record, len(records))
+	copy(sorted, records)
+
+	compare := compareHistoryRecordsByBinary
+	switch sortBy {
+	case historyListSortOwner:
+		compare = compareHistoryRecordsByOwner
+	case historyListSortRepo:
+		compare = compareHistoryRecordsByRepo
+	case historyListSortInstalled:
+		compare = compareHistoryRecordsByInstalledAt
+	}
+
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return compare(sorted[i], sorted[j]) < 0
+	})
+
+	return sorted
+}
+
+func compareHistoryRecordsByOwner(left, right history.Record) int {
+	if result := compareHistoryRecordOwner(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordRepo(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordBinary(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordInstalledAt(left, right); result != 0 {
+		return result
+	}
+	return compareHistoryRecordID(left, right)
+}
+
+func compareHistoryRecordsByRepo(left, right history.Record) int {
+	if result := compareHistoryRecordRepo(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordOwner(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordBinary(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordInstalledAt(left, right); result != 0 {
+		return result
+	}
+	return compareHistoryRecordID(left, right)
+}
+
+func compareHistoryRecordsByBinary(left, right history.Record) int {
+	if result := compareHistoryRecordBinary(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordOwner(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordRepo(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordInstalledAt(left, right); result != 0 {
+		return result
+	}
+	return compareHistoryRecordID(left, right)
+}
+
+func compareHistoryRecordsByInstalledAt(left, right history.Record) int {
+	if result := compareHistoryRecordInstalledAt(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordOwner(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordRepo(left, right); result != 0 {
+		return result
+	}
+	if result := compareHistoryRecordBinary(left, right); result != 0 {
+		return result
+	}
+	return compareHistoryRecordID(left, right)
+}
+
+func compareHistoryRecordOwner(left, right history.Record) int {
+	return compareHistoryText(left.Owner, right.Owner)
+}
+
+func compareHistoryRecordRepo(left, right history.Record) int {
+	return compareHistoryText(left.Repo, right.Repo)
+}
+
+func compareHistoryRecordBinary(left, right history.Record) int {
+	return compareHistoryText(historyRecordBinarySortKey(left), historyRecordBinarySortKey(right))
+}
+
+func compareHistoryRecordInstalledAt(left, right history.Record) int {
+	switch {
+	case left.InstalledAt.Before(right.InstalledAt):
+		return -1
+	case right.InstalledAt.Before(left.InstalledAt):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func compareHistoryRecordID(left, right history.Record) int {
+	return compareHistoryText(left.ID, right.ID)
+}
+
+func compareHistoryText(left, right string) int {
+	if result := strings.Compare(strings.ToLower(left), strings.ToLower(right)); result != 0 {
+		return result
+	}
+
+	return strings.Compare(left, right)
+}
+
+func historyRecordBinarySortKey(rec history.Record) string {
+	return strings.Join(historyRecordBinaryNames(rec), "\x00")
+}
+
+func historyRecordBinaryNames(rec history.Record) []string {
+	var names []string
+	seen := make(map[string]struct{})
+
+	for _, bin := range rec.Binaries {
+		name := bin.InstalledAs
+		if name == "" {
+			name = bin.Name
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	sort.SliceStable(names, func(i, j int) bool {
+		return compareHistoryText(names[i], names[j]) < 0
+	})
+
+	return names
 }
 
 var historyRemoveCmd = &cobra.Command{
@@ -323,6 +498,8 @@ var historyPathCmd = &cobra.Command{
 func init() {
 	historyCmd.AddCommand(historyListCmd, historyRemoveCmd, historyClearCmd, historyPruneCmd, historyEditCmd, historyPathCmd)
 	historyListCmd.Flags().String("format", "text", "output format: text, json")
+	historyListCmd.Flags().String("sort", historyListSortBinary, "sort by: owner, repo, binary, installed")
+	mustRegisterFlagCompletion(historyListCmd, "sort", completeHistoryListSortValues)
 	historyClearCmd.Flags().Bool("force", false, "skip confirmation prompt")
 	historyPruneCmd.Flags().Bool("dry-run", false, "show what would be pruned without removing")
 	rootCmd.AddCommand(historyCmd)
