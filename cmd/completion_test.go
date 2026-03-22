@@ -85,6 +85,35 @@ func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 	}
 }
 
+func TestCompleteHistoryListSortValues(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completeHistoryListSortValues(&cobra.Command{}, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeHistoryListSortValues() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+
+	want := []string{
+		"binary\tsort by installed binary name",
+		"owner\tsort by repository owner",
+		"repo\tsort by repository name",
+		"installed\tsort by installed date, oldest first",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeHistoryListSortValues() = %v, want %v", got, want)
+	}
+
+	got, directive = completeHistoryListSortValues(&cobra.Command{}, nil, "re")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeHistoryListSortValues() prefix directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+
+	want = []string{"repo\tsort by repository name"}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeHistoryListSortValues() prefix = %v, want %v", got, want)
+	}
+}
+
 func TestRootHasCompletionCommand(t *testing.T) {
 	t.Parallel()
 

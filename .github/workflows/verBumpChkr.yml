@@ -5,8 +5,8 @@ on:
     types: [opened, reopened, synchronize]
 
 env:
-  FILE_PATH: 'cmd/version.go'                                # Path to file with version string
-  VERSION_PATTERN: 'version = "v[0-9]\+\.[0-9]\+\.[0-9]\+"'  # Version string regex pattern
+  FILE_PATH: 'cmd/version.go'                               # Path to file with version string
+  VERSION_PATTERN: 'version = "[0-9]\+\.[0-9]\+\.[0-9]\+"'  # Version string regex pattern
 
 permissions:
   contents: read
