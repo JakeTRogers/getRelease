@@ -408,6 +408,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	if err := store.Load(); err != nil {
 		return fmt.Errorf("loading history: %w", err)
 	}
+	existing := store.FindByRepo(owner, repo)
 
 	rec := history.Record{
 		Owner: owner,
@@ -416,6 +417,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		Asset: history.AssetInfo{Name: selectedAsset.Name, URL: selectedAsset.DownloadURL},
 		OS:    osName,
 		Arch:  arch,
+	}
+	if existing != nil {
+		rec.PinLevel = existing.PinLevel
 	}
 	for i, bin := range toInstall {
 		rec.Binaries = append(rec.Binaries, history.Binary{

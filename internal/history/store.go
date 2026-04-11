@@ -61,6 +61,10 @@ func (s *Store) Load() error {
 			slog.Warn("skipping malformed history record", "index", i, "err", err)
 			continue
 		}
+		if !isValidPinLevel(rec.PinLevel) {
+			slog.Warn("normalizing invalid pin level in history record", "id", rec.ID, "owner", rec.Owner, "repo", rec.Repo, "pinLevel", rec.PinLevel)
+			rec.PinLevel = PinNone
+		}
 		parsed = append(parsed, rec)
 	}
 	s.records = parsed
@@ -101,9 +105,14 @@ func (s *Store) Save() error {
 }
 
 // Add inserts or updates a record in the store. If a record with the same
-// owner+repo exists it will be updated (tag, asset, binaries, updatedAt).
-// New records will receive an ID if empty and InstalledAt will be set if zero.
+// owner+repo exists it will be updated (tag, pin level, asset, binaries,
+// updatedAt). New records will receive an ID if empty and InstalledAt will be
+// set if zero.
 func (s *Store) Add(r Record) error {
+	if !isValidPinLevel(r.PinLevel) {
+		return fmt.Errorf("invalid pin level %q", r.PinLevel)
+	}
+
 	now := time.Now()
 	if r.ID == "" {
 		r.ID = GenerateID()
@@ -117,6 +126,7 @@ func (s *Store) Add(r Record) error {
 		if s.records[i].Owner == r.Owner && s.records[i].Repo == r.Repo {
 			// update existing
 			s.records[i].Tag = r.Tag
+			s.records[i].PinLevel = r.PinLevel
 			s.records[i].Asset = r.Asset
 			s.records[i].Binaries = r.Binaries
 			s.records[i].UpdatedAt = r.UpdatedAt

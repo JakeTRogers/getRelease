@@ -1,15 +1,18 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/JakeTRogers/getRelease/internal/config"
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
 )
@@ -64,6 +67,51 @@ func TestValidateUpgradeArgs(t *testing.T) {
 	}
 }
 
+func TestRunUpgradeUnpinnedUsesLatestRelease(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			if owner != "cli" || repo != "tool" {
+				t.Fatalf("GetLatestRelease() called with %s/%s", owner, repo)
+			}
+			return &github.Release{
+				TagName: "v1.0.1",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://example.invalid/tool_linux_amd64",
+					Size:        2048,
+				}},
+			}, nil
+		},
+		listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+			t.Fatalf("ListReleases() should not be called for unpinned upgrades")
+			return nil, nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	setTestConfig(filepath.Join(t.TempDir(), "downloads"), filepath.Join(t.TempDir(), "bin"))
+	writeHistoryRecords(t, []history.Record{
+		newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64", "tool", filepath.Join(t.TempDir(), "bin", "tool")),
+	})
+
+	cmd := &cobra.Command{}
+	addUpgradeTestFlags(cmd)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runUpgrade(cmd, []string{"tool"}); err != nil {
+		t.Fatalf("runUpgrade() error: %v", err)
+	}
+	if !strings.Contains(out.String(), "Would upgrade https://github.com/cli/tool/releases from v1.0.0 to v1.0.1") {
+		t.Fatalf("runUpgrade() output = %q, want dry-run summary", out.String())
+	}
+}
+
 func TestPresentHistoryRecords(t *testing.T) {
 	t.Parallel()
 
@@ -107,6 +155,52 @@ func TestPresentHistoryRecords(t *testing.T) {
 	}
 }
 
+func TestUpgradeRecordPinnedWithoutEligibleReleaseIsUnchanged(t *testing.T) {
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			t.Fatalf("GetLatestRelease() should not be called for pinned upgrades")
+			return nil, nil
+		},
+		listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+			if owner != "cli" || repo != "tool" {
+				t.Fatalf("ListReleases() called with %s/%s", owner, repo)
+			}
+			if limit != 100 {
+				t.Fatalf("ListReleases() limit = %d, want 100", limit)
+			}
+			return []github.Release{
+				{TagName: "v1.3.0"},
+				{TagName: "v2.0.0"},
+				{TagName: "v1.2.4", Draft: true},
+				{TagName: "v1.2.5", Prerelease: true},
+				{TagName: "nightly"},
+			}, nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	cfg := &config.AppConfig{}
+	rec := newHistoryRecord("rec1", "cli", "tool", "v1.2.3", "tool_linux_amd64", "tool", filepath.Join(t.TempDir(), "bin", "tool"))
+	rec.PinLevel = history.PinMinor
+
+	cmd := &cobra.Command{}
+	var out strings.Builder
+	cmd.SetOut(&out)
+
+	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, false)
+	if err != nil {
+		t.Fatalf("upgradeRecord() error: %v", err)
+	}
+	if upgraded {
+		t.Fatal("upgradeRecord() upgraded = true, want false")
+	}
+	if !strings.Contains(out.String(), "Pin policy: minor (allows v1.2.x)") {
+		t.Fatalf("upgradeRecord() output = %q, want policy line", out.String())
+	}
+	if !strings.Contains(out.String(), "no newer eligible release found") {
+		t.Fatalf("upgradeRecord() output = %q, want unchanged message", out.String())
+	}
+}
 func TestRecordInstalled(t *testing.T) {
 	t.Parallel()
 
@@ -219,5 +313,222 @@ func TestBuildSingleAssetUpgradeMappings_MissingBinary(t *testing.T) {
 	wantMissing := []string{"helper"}
 	if !reflect.DeepEqual(missing, wantMissing) {
 		t.Fatalf("buildSingleAssetUpgradeMappings() missing = %v, want %v", missing, wantMissing)
+	}
+}
+
+func TestUpgradeRecordPinnedReleaseSelection(t *testing.T) {
+	tests := []struct {
+		name           string
+		level          history.PinLevel
+		releases       []github.Release
+		wantTag        string
+		wantPolicyLine string
+	}{
+		{
+			name:  "minor selects highest eligible patch",
+			level: history.PinMinor,
+			releases: []github.Release{
+				{TagName: "v2.0.0"},
+				{TagName: "v1.3.0"},
+				{TagName: "v1.2.4", Assets: []github.Asset{{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/tool-124", Size: 124}}},
+				{TagName: "v1.2.9", Assets: []github.Asset{{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/tool-129", Size: 129}}},
+				{TagName: "latest"},
+				{TagName: "v1.2.10-rc1"},
+			},
+			wantTag:        "v1.2.9",
+			wantPolicyLine: "Pin policy: minor (allows v1.2.x)",
+		},
+		{
+			name:  "major selects highest eligible minor",
+			level: history.PinMajor,
+			releases: []github.Release{
+				{TagName: "v2.0.0"},
+				{TagName: "v1.9.1", Assets: []github.Asset{{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/tool-191", Size: 191}}},
+				{TagName: "v1.4.0", Assets: []github.Asset{{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/tool-140", Size: 140}}},
+				{TagName: "v1.9.2", Draft: true},
+				{TagName: "v1.8.9", Prerelease: true},
+			},
+			wantTag:        "v1.9.1",
+			wantPolicyLine: "Pin policy: major (allows v1.x)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeReleaseClient{
+				getLatestRelease: func(owner, repo string) (*github.Release, error) {
+					t.Fatalf("GetLatestRelease() should not be called for pinned upgrades")
+					return nil, nil
+				},
+				listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+					if owner != "cli" || repo != "tool" {
+						t.Fatalf("ListReleases() called with %s/%s", owner, repo)
+					}
+					if limit != 100 {
+						t.Fatalf("ListReleases() limit = %d, want 100", limit)
+					}
+					return tt.releases, nil
+				},
+			}
+			useTestCommandDeps(t, client)
+
+			cfg := &config.AppConfig{AssetPreferences: config.AssetPreferences{Formats: []string{"tar.gz", "zip"}}}
+			rec := newHistoryRecord("rec1", "cli", "tool", "v1.2.3", "tool_linux_amd64", "tool", filepath.Join(t.TempDir(), "bin", "tool"))
+			rec.PinLevel = tt.level
+
+			cmd := &cobra.Command{}
+			addUpgradeTestFlags(cmd)
+			if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+				t.Fatalf("set dry-run: %v", err)
+			}
+
+			var out strings.Builder
+			cmd.SetOut(&out)
+
+			upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, true)
+			if err != nil {
+				t.Fatalf("upgradeRecord() error: %v", err)
+			}
+			if !upgraded {
+				t.Fatal("upgradeRecord() upgraded = false, want true")
+			}
+			if !strings.Contains(out.String(), tt.wantPolicyLine) {
+				t.Fatalf("upgradeRecord() output = %q, want policy line %q", out.String(), tt.wantPolicyLine)
+			}
+			if !strings.Contains(out.String(), "to "+tt.wantTag) {
+				t.Fatalf("upgradeRecord() output = %q, want upgrade target %q", out.String(), tt.wantTag)
+			}
+		})
+	}
+}
+
+func TestUpgradeRecordPatchPinIsUnchanged(t *testing.T) {
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			t.Fatalf("GetLatestRelease() should not be called for patch pin")
+			return nil, nil
+		},
+		listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+			t.Fatalf("ListReleases() should not be called for patch pin")
+			return nil, nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	cfg := &config.AppConfig{}
+	rec := newHistoryRecord("rec1", "cli", "tool", "v1.2.3", "tool_linux_amd64", "tool", filepath.Join(t.TempDir(), "bin", "tool"))
+	rec.PinLevel = history.PinPatch
+
+	cmd := &cobra.Command{}
+	var out strings.Builder
+	cmd.SetOut(&out)
+
+	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, false)
+	if err != nil {
+		t.Fatalf("upgradeRecord() error: %v", err)
+	}
+	if upgraded {
+		t.Fatal("upgradeRecord() upgraded = true, want false")
+	}
+	if !strings.Contains(out.String(), "Pin policy: patch (locked to exact release v1.2.3)") {
+		t.Fatalf("upgradeRecord() output = %q, want patch policy", out.String())
+	}
+}
+
+func TestResolveUpgradeReleasePatchPinWithNonSemverTagIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			t.Fatalf("GetLatestRelease() should not be called for patch pin")
+			return nil, nil
+		},
+		listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+			t.Fatalf("ListReleases() should not be called for patch pin")
+			return nil, nil
+		},
+	}
+
+	rec := &history.Record{
+		Owner:    "cli",
+		Repo:     "tool",
+		Tag:      "latest",
+		PinLevel: history.PinPatch,
+	}
+
+	cmd := &cobra.Command{}
+	var out strings.Builder
+	cmd.SetOut(&out)
+
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
+	if err != nil {
+		t.Fatalf("resolveUpgradeRelease() error: %v", err)
+	}
+	if release != nil {
+		t.Fatalf("resolveUpgradeRelease() release = %+v, want nil", release)
+	}
+	if !unchanged {
+		t.Fatal("resolveUpgradeRelease() unchanged = false, want true")
+	}
+	if !strings.Contains(out.String(), "Pin policy: patch (locked to exact release latest)") {
+		t.Fatalf("resolveUpgradeRelease() output = %q, want patch policy", out.String())
+	}
+}
+
+func TestResolveUpgradeReleaseNonSemverPinnedVersionFailsForMinorAndMajorPins(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level history.PinLevel
+	}{
+		{name: "minor pin", level: history.PinMinor},
+		{name: "major pin", level: history.PinMajor},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeReleaseClient{
+				getLatestRelease: func(owner, repo string) (*github.Release, error) {
+					t.Fatalf("GetLatestRelease() should not be called for %s", tt.level)
+					return nil, nil
+				},
+				listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+					t.Fatalf("ListReleases() should not be called when parsing the current pinned tag fails for %s", tt.level)
+					return nil, nil
+				},
+			}
+
+			rec := &history.Record{
+				Owner:    "cli",
+				Repo:     "tool",
+				Tag:      "latest",
+				PinLevel: tt.level,
+			}
+
+			cmd := &cobra.Command{}
+			var out strings.Builder
+			cmd.SetOut(&out)
+
+			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
+			if err == nil {
+				t.Fatal("resolveUpgradeRelease() error = nil, want parse error")
+			}
+			wantErr := "parse pinned version \"latest\" for cli/tool: invalid version format: latest"
+			if err.Error() != wantErr {
+				t.Fatalf("resolveUpgradeRelease() error = %q, want %q", err.Error(), wantErr)
+			}
+			if release != nil {
+				t.Fatalf("resolveUpgradeRelease() release = %+v, want nil", release)
+			}
+			if unchanged {
+				t.Fatal("resolveUpgradeRelease() unchanged = true, want false")
+			}
+			if out.Len() != 0 {
+				t.Fatalf("resolveUpgradeRelease() output = %q, want empty output", out.String())
+			}
+		})
 	}
 }

@@ -121,8 +121,6 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	useTestCommandDeps(t, &fakeReleaseClient{
 		getLatestRelease: func(owner, repo string) (*github.Release, error) {
 			switch owner + "/" + repo {
-			case "cli/current":
-				return &github.Release{TagName: "v1.0.0", Assets: []github.Asset{{Name: "current_linux_amd64", DownloadURL: "https://example.invalid/current", Size: 1024}}}, nil
 			case "cli/updated":
 				return &github.Release{TagName: "v2.0.0", Assets: []github.Asset{{Name: "updated_linux_amd64", DownloadURL: "https://example.invalid/updated", Size: 2048}}}, nil
 			case "cli/failing":
@@ -144,7 +142,11 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	writeExecutableFile(t, failingPath)
 
 	for _, rec := range []history.Record{
-		newHistoryRecord("rec1", "cli", "current", "v1.0.0", "current_linux_amd64", "current", currentPath),
+		func() history.Record {
+			rec := newHistoryRecord("rec1", "cli", "current", "v1.0.0", "current_linux_amd64", "current", currentPath)
+			rec.PinLevel = history.PinPatch
+			return rec
+		}(),
 		newHistoryRecord("rec2", "cli", "updated", "v1.0.0", "updated_linux_amd64", "updated", updatedPath),
 		newHistoryRecord("rec3", "cli", "failing", "v1.0.0", "failing_linux_amd64", "failing", failingPath),
 		newHistoryRecord("rec4", "cli", "missing", "v1.0.0", "missing_linux_amd64", "missing", filepath.Join(t.TempDir(), "bin", "missing")),
@@ -164,11 +166,14 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "completed with failures") {
 		t.Fatalf("runUpgradeAll() error = %v, want failure summary", err)
 	}
-	if !strings.Contains(out.String(), "Summary: 3 checked, 1 would upgrade, 1 already at latest, 1 skipped (missing), 1 failed") {
+	if !strings.Contains(out.String(), "Summary: 3 checked, 1 would upgrade, 1 unchanged, 1 skipped (missing), 1 failed") {
 		t.Fatalf("runUpgradeAll() output = %q, want summary", out.String())
 	}
 	if !strings.Contains(out.String(), "==> cli/current : https://github.com/cli/current/releases") {
 		t.Fatalf("runUpgradeAll() output = %q, want clickable releases header", out.String())
+	}
+	if !strings.Contains(out.String(), "Pin policy: patch (locked to exact release v1.0.0)") {
+		t.Fatalf("runUpgradeAll() output = %q, want patch pin policy", out.String())
 	}
 	if !strings.Contains(errOut.String(), "Failed upgrading cli/failing: fetching latest release for cli/failing: boom") {
 		t.Fatalf("runUpgradeAll() stderr = %q, want failure line", errOut.String())
@@ -180,13 +185,23 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	client := &fakeReleaseClient{
 		getLatestRelease: func(owner, repo string) (*github.Release, error) {
 			return &github.Release{
-				TagName: "v2.0.0",
+				TagName: "v1.0.1",
 				Assets: []github.Asset{{
 					Name:        "tool_linux_amd64",
 					DownloadURL: "https://example.invalid/tool_linux_amd64",
 					Size:        2048,
 				}},
 			}, nil
+		},
+		listReleases: func(owner, repo string, limit int) ([]github.Release, error) {
+			return []github.Release{{
+				TagName: "v1.0.1",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://example.invalid/tool_linux_amd64",
+					Size:        2048,
+				}},
+			}}, nil
 		},
 		downloadAsset: func(_ string, destPath string) (int64, error) {
 			return writeDownloadedBinary(t, destPath), nil
@@ -202,6 +217,7 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	writeExecutableFile(t, targetPath)
 
 	rec := newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64", "tool", targetPath)
+	rec.PinLevel = history.PinMinor
 	storePath := filepath.Join(baseDir, "history.json")
 	store := history.NewStore(storePath)
 	if err := store.Add(rec); err != nil {
@@ -230,7 +246,7 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	if !upgraded {
 		t.Fatal("upgradeRecord() upgraded = false, want true")
 	}
-	if !strings.Contains(out.String(), "Upgraded https://github.com/cli/tool/releases to v2.0.0") {
+	if !strings.Contains(out.String(), "Upgraded https://github.com/cli/tool/releases to v1.0.1") {
 		t.Fatalf("upgradeRecord() output = %q, want upgrade completion", out.String())
 	}
 
@@ -241,8 +257,11 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 		t.Fatalf("reload history store: %v", err)
 	}
 	records := store.Records()
-	if len(records) != 1 || records[0].Tag != "v2.0.0" {
+	if len(records) != 1 || records[0].Tag != "v1.0.1" {
 		t.Fatalf("history records after upgrade = %+v, want updated tag", records)
+	}
+	if records[0].PinLevel != history.PinMinor {
+		t.Fatalf("history pin level after upgrade = %q, want %q", records[0].PinLevel, history.PinMinor)
 	}
 }
 

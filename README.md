@@ -14,7 +14,7 @@ getRelease is a Go CLI for downloading GitHub release assets, extracting archive
 - Install one binary or multiple binaries from the selected asset.
 - Rename a single installed binary with `--install-as`.
 - Skip installation and keep the downloaded payload with `--download-only`.
-- Track install history for upgrades, shell completion, and cleanup workflows.
+- Track install history for upgrades, version pinning, shell completion, and cleanup workflows.
 - Upgrade one installed package or every installed package still present on disk.
 - Manage config and history from built-in `config` and `history` subcommands.
 - Emit machine-readable JSON from the main install flow and list/history/config commands.
@@ -81,11 +81,33 @@ Upgrade every installed package that still exists on disk:
 getRelease upgrade --all
 ```
 
+Pin an installed package to its current minor line:
+
+```bash
+getRelease pin timeBuddy --level minor
+```
+
+Remove version pinning from an installed package:
+
+```bash
+getRelease unpin timeBuddy
+```
+
+`pin` works on tracked installs from local history. Pin levels mean:
+
+- `patch`: stay on the current exact release
+- `minor`: allow patch updates within the current minor line
+- `major`: allow minor and patch updates within the current major line
+
+When a pinned package has no eligible newer release inside its allowed range, `upgrade` and `upgrade --all` report it as unchanged instead of failed.
+
 Inspect tracked installs:
 
 ```bash
 getRelease history list
 ```
+
+`history list` shows the current pin policy in the `PIN` column using `-`, `patch`, `minor`, or `major`.
 
 Prune history records for binaries that are no longer installed:
 
@@ -124,6 +146,8 @@ The main commands are:
 - `getRelease`: download, extract, and install a release asset
 - `getRelease list`: list recent releases or release assets
 - `getRelease upgrade`: upgrade an installed package from recorded history
+- `getRelease pin`: pin an installed package to the current patch, minor, or major line
+- `getRelease unpin`: remove version pinning from an installed package
 - `getRelease history`: inspect and maintain install history
 - `getRelease config`: inspect and change configuration
 - `getRelease version`: print version and platform information
@@ -149,10 +173,11 @@ The completion callbacks are extended to read local install history. That gives 
 getRelease -o <TAB>
 getRelease -o JakeTRogers -r <TAB>
 getRelease upgrade <TAB>
+getRelease pin <TAB>
 getRelease upgrade -o <TAB>
 ```
 
-`upgrade` suggestions are limited to binaries that are still installed on disk.
+`upgrade`, `pin`, and `unpin` target suggestions are limited to binaries that are still installed on disk. The `pin --level` flag completes `patch`, `minor`, and `major`.
 
 Generate completion scripts explicitly if you prefer to install them into your shell startup files:
 
@@ -166,7 +191,7 @@ getRelease completion fish
 
 - Asset selection is automatic when there is exactly one match or one clearly preferred match for the current platform.
 - When an archive contains multiple binaries, the CLI can install all of them or prompt you to choose one.
-- Install history is what powers `upgrade`, owner and repo completion, and installed-target suggestions.
+- Install history is what powers `upgrade`, `pin`, `unpin`, owner and repo completion, and installed-target suggestions.
 
 ## Development
 

@@ -67,7 +67,7 @@ var historyListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "ID\tOWNER\tREPO\tTAG\tBINARIES\tINSTALLED"); err != nil {
+		if _, err := fmt.Fprintln(w, "ID\tOWNER\tREPO\tTAG\tPIN\tBINARIES\tINSTALLED"); err != nil {
 			return fmt.Errorf("writing history header: %w", err)
 		}
 		for _, r := range records {
@@ -75,12 +75,16 @@ var historyListCmd = &cobra.Command{
 			for _, b := range r.Binaries {
 				bins = append(bins, b.InstalledAs)
 			}
+			pin := "-"
+			if r.PinLevel != history.PinNone {
+				pin = string(r.PinLevel)
+			}
 			installed := ""
 			if !r.InstalledAt.IsZero() {
 				installed = r.InstalledAt.Format("2006-01-02")
 			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.ID, r.Owner, r.Repo, r.Tag, strings.Join(bins, ","), installed); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.ID, r.Owner, r.Repo, r.Tag, pin, strings.Join(bins, ","), installed); err != nil {
 				return fmt.Errorf("writing history record %s: %w", r.ID, err)
 			}
 		}

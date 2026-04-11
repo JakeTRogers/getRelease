@@ -18,6 +18,7 @@ import (
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
 	"github.com/JakeTRogers/getRelease/internal/platform"
+	"github.com/JakeTRogers/getRelease/internal/semver"
 )
 
 var upgradeCmd = &cobra.Command{
@@ -107,7 +108,7 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	}
 
 	var changed int
-	var current int
+	var unchanged int
 	var failed int
 	var failures []string
 
@@ -133,7 +134,7 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		if upgraded {
 			changed++
 		} else {
-			current++
+			unchanged++
 		}
 		if _, err := fmt.Fprintln(cmd.OutOrStdout()); err != nil {
 			return fmt.Errorf("writing upgrade separator: %w", err)
@@ -144,7 +145,7 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	if dryRun {
 		action = "would upgrade"
 	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Summary: %d checked, %d %s, %d already at latest, %d skipped (missing), %d failed\n", len(records), changed, action, current, skippedMissing, failed); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Summary: %d checked, %d %s, %d unchanged, %d skipped (missing), %d failed\n", len(records), changed, action, unchanged, skippedMissing, failed); err != nil {
 		return fmt.Errorf("writing upgrade summary: %w", err)
 	}
 
@@ -204,15 +205,11 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	repo := rec.Repo
 
 	client := newGitHubClient()
-	release, err := client.GetLatestRelease(owner, repo)
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
 	if err != nil {
-		return false, fmt.Errorf("fetching latest release for %s/%s: %w", owner, repo, err)
+		return false, err
 	}
-
-	if release.TagName == rec.Tag {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Already at latest version (%s)\n", rec.Tag); err != nil {
-			return false, fmt.Errorf("writing current-version message: %w", err)
-		}
+	if unchanged {
 		return false, nil
 	}
 
@@ -340,6 +337,99 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		return false, fmt.Errorf("writing upgrade completion: %w", err)
 	}
 	return true, nil
+}
+
+func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *history.Record) (*github.Release, bool, error) {
+	owner := rec.Owner
+	repo := rec.Repo
+
+	switch rec.PinLevel {
+	case history.PinNone:
+		release, err := client.GetLatestRelease(owner, repo)
+		if err != nil {
+			return nil, false, fmt.Errorf("fetching latest release for %s/%s: %w", owner, repo, err)
+		}
+
+		if release.TagName == rec.Tag {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Already at latest version (%s)\n", rec.Tag); err != nil {
+				return nil, false, fmt.Errorf("writing current-version message: %w", err)
+			}
+			return nil, true, nil
+		}
+
+		return release, false, nil
+
+	case history.PinPatch:
+		allowance := pinAllowanceDescription(rec.PinLevel, semver.Version{})
+		slog.Info("pin policy active", "owner", owner, "repo", repo, "level", rec.PinLevel, "tag", rec.Tag, "allowance", allowance)
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), pinPolicySummary(rec.PinLevel, rec.Tag, semver.Version{})); err != nil {
+			return nil, false, fmt.Errorf("writing pin policy message: %w", err)
+		}
+		return nil, true, nil
+
+	case history.PinMinor, history.PinMajor:
+		currentVersion, err := semver.Parse(rec.Tag)
+		if err != nil {
+			return nil, false, fmt.Errorf("parse pinned version %q for %s/%s: %w", rec.Tag, owner, repo, err)
+		}
+
+		allowance := pinAllowanceDescription(rec.PinLevel, currentVersion)
+		slog.Info("pin policy active", "owner", owner, "repo", repo, "level", rec.PinLevel, "tag", rec.Tag, "allowance", allowance)
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), pinPolicySummary(rec.PinLevel, rec.Tag, currentVersion)); err != nil {
+			return nil, false, fmt.Errorf("writing pin policy message: %w", err)
+		}
+
+		releases, err := client.ListReleases(owner, repo, 100)
+		if err != nil {
+			return nil, false, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+		}
+
+		bestIndex := -1
+		var bestVersion semver.Version
+		for i := range releases {
+			release := releases[i]
+			if release.TagName == rec.Tag || release.Draft || release.Prerelease {
+				continue
+			}
+
+			version, err := semver.Parse(release.TagName)
+			if err != nil {
+				slog.Debug("skipping non-semver release tag", "owner", owner, "repo", repo, "tag", release.TagName, "err", err)
+				continue
+			}
+			if version.Compare(currentVersion) <= 0 {
+				continue
+			}
+
+			allowed := false
+			switch rec.PinLevel {
+			case history.PinMinor:
+				allowed = version.SameMinor(currentVersion)
+			case history.PinMajor:
+				allowed = version.SameMajor(currentVersion)
+			}
+			if !allowed {
+				continue
+			}
+
+			if bestIndex == -1 || version.Compare(bestVersion) > 0 {
+				bestIndex = i
+				bestVersion = version
+			}
+		}
+
+		if bestIndex == -1 {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "no newer eligible release found"); err != nil {
+				return nil, false, fmt.Errorf("writing unchanged pin message: %w", err)
+			}
+			return nil, true, nil
+		}
+
+		return &releases[bestIndex], false, nil
+
+	default:
+		return nil, false, fmt.Errorf("unsupported pin level %q for %s/%s", rec.PinLevel, owner, repo)
+	}
 }
 
 func buildArchiveUpgradeMappings(rec history.Record, extractedDir string, found []string) ([]upgradeMapping, []string) {

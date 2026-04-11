@@ -1,3 +1,9 @@
+## v1.2.0 (2026-04-11)
+
+### Feat
+
+- **pin**: add version pinning with pin/unpin commands and semver ceiling support
+
 ## v1.1.0 (2026-03-22)
 
 ### Feat
