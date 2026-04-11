@@ -118,6 +118,17 @@ func addUpgradeTestFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("dry-run", false, "")
 }
 
+func addPinTestFlags(cmd *cobra.Command) {
+	cmd.Flags().String("level", string(history.PinPatch), "")
+	cmd.Flags().String("owner", "", "")
+	cmd.Flags().String("repo", "", "")
+}
+
+func addUnpinTestFlags(cmd *cobra.Command) {
+	cmd.Flags().String("owner", "", "")
+	cmd.Flags().String("repo", "", "")
+}
+
 func writeDownloadedBinary(t *testing.T, destPath string) int64 {
 	t.Helper()
 

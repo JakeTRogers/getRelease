@@ -114,6 +114,41 @@ func TestCompleteHistoryListSortValues(t *testing.T) {
 	}
 }
 
+func TestCompletePinLevels(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completePinLevels(&cobra.Command{}, nil, "m")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completePinLevels() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+
+	want := []string{
+		"minor\tallow patch updates within current minor",
+		"major\tallow minor and patch updates within current major",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completePinLevels() = %v, want %v", got, want)
+	}
+}
+
+func TestCompletePinLevelsAllValues(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completePinLevels(&cobra.Command{}, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completePinLevels() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+
+	want := []string{
+		"patch\tlock to current exact release",
+		"minor\tallow patch updates within current minor",
+		"major\tallow minor and patch updates within current major",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completePinLevels() = %v, want %v", got, want)
+	}
+}
+
 func TestRootHasCompletionCommand(t *testing.T) {
 	t.Parallel()
 
@@ -158,5 +193,37 @@ func TestLoadHistoryRecordsForCompletionAndInstalledTargets(t *testing.T) {
 	got, _ = completeInstalledUpgradeTargets(cmd, nil, "")
 	if len(got) != 0 {
 		t.Fatalf("completeInstalledUpgradeTargets() with --all = %v, want no completions", got)
+	}
+}
+
+func TestPinAndUnpinCommandTargetCompletions(t *testing.T) {
+	useTestCommandDeps(t, nil)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
+	presentPath := filepath.Join(t.TempDir(), "bin", "tool")
+	writeExecutableFile(t, presentPath)
+	writeHistoryRecords(t, []history.Record{
+		newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", presentPath),
+		newHistoryRecord("rec2", "cli", "missing", "v1.0.0", "missing", "missing", filepath.Join(t.TempDir(), "bin", "missing")),
+	})
+
+	for _, tt := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{name: "pin", cmd: pinCmd},
+		{name: "unpin", cmd: unpinCmd},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, directive := tt.cmd.ValidArgsFunction(tt.cmd, nil, "")
+			if directive != cobra.ShellCompDirectiveNoFileComp {
+				t.Fatalf("%s ValidArgsFunction directive = %v, want %v", tt.name, directive, cobra.ShellCompDirectiveNoFileComp)
+			}
+
+			want := []string{"cli/tool\ttool"}
+			if !reflect.DeepEqual([]string(got), want) {
+				t.Fatalf("%s ValidArgsFunction = %v, want %v", tt.name, got, want)
+			}
+		})
 	}
 }

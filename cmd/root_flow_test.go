@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/JakeTRogers/getRelease/internal/github"
+	"github.com/JakeTRogers/getRelease/internal/history"
 )
 
 func TestInitConfigSetsLogLevel(t *testing.T) {
@@ -234,6 +235,63 @@ func TestRunRootInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	}
 	if len(records[0].Binaries) != 1 || records[0].Binaries[0].InstalledAs != "tool" {
 		t.Fatalf("history binaries = %+v, want installed binary entry", records[0].Binaries)
+	}
+}
+
+func TestRunRootPreservesExistingPinLevel(t *testing.T) {
+	baseDir := t.TempDir()
+	xdgData := filepath.Join(baseDir, "xdg-data")
+	t.Setenv("XDG_DATA_HOME", xdgData)
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v1.2.4",
+				Name:    "Tool 1.2.4",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://example.invalid/tool_linux_amd64",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ string, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	workDir := filepath.Join(baseDir, "downloads")
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatalf("create install dir: %v", err)
+	}
+	setTestConfig(workDir, installDir)
+
+	existingPath := filepath.Join(installDir, "tool")
+	writeExecutableFile(t, existingPath)
+	existing := newHistoryRecord("rec1", "cli", "tool", "v1.2.3", "tool_linux_amd64", "tool", existingPath)
+	existing.PinLevel = history.PinMinor
+	writeHistoryRecords(t, []history.Record{existing})
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	records := loadHistoryRecords(t)
+	if len(records) != 1 {
+		t.Fatalf("history records = %d, want 1", len(records))
+	}
+	if records[0].PinLevel != history.PinMinor {
+		t.Fatalf("history pin level = %q, want %q", records[0].PinLevel, history.PinMinor)
 	}
 }
 

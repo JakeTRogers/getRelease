@@ -37,7 +37,9 @@ func TestHistoryListJSON(t *testing.T) {
 	resetHistoryListFlags(t)
 	installPath := filepath.Join(t.TempDir(), "bin", "tool")
 	writeExecutableFile(t, installPath)
-	writeHistoryRecords(t, []history.Record{newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", installPath)})
+	record := newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", installPath)
+	record.PinLevel = history.PinMinor
+	writeHistoryRecords(t, []history.Record{record})
 
 	if err := historyListCmd.Flags().Set("format", "json"); err != nil {
 		t.Fatalf("set format: %v", err)
@@ -54,8 +56,57 @@ func TestHistoryListJSON(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal() error: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "rec1" || got[0].Owner != "cli" {
+	if len(got) != 1 || got[0].ID != "rec1" || got[0].Owner != "cli" || got[0].PinLevel != history.PinMinor {
 		t.Fatalf("history list json = %+v, want saved record", got)
+	}
+}
+
+func TestHistoryListTextShowsPinColumn(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	firstPath := filepath.Join(t.TempDir(), "bin", "tool")
+	secondPath := filepath.Join(t.TempDir(), "bin", "helper")
+	writeExecutableFile(t, firstPath)
+	writeExecutableFile(t, secondPath)
+
+	pinned := newHistoryRecord("rec1", "cli", "tool", "v1.2.3", "tool", "tool", firstPath)
+	pinned.PinLevel = history.PinMajor
+	unpinned := newHistoryRecord("rec2", "ops", "helper", "v2.0.0", "helper", "helper", secondPath)
+	writeHistoryRecords(t, []history.Record{pinned, unpinned})
+
+	var out bytes.Buffer
+	historyListCmd.SetOut(&out)
+
+	if err := historyListCmd.RunE(historyListCmd, nil); err != nil {
+		t.Fatalf("history list error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("history list output = %q, want header and two rows", out.String())
+	}
+
+	headerFields := strings.Fields(lines[0])
+	wantHeader := []string{"ID", "OWNER", "REPO", "TAG", "PIN", "BINARIES", "INSTALLED"}
+	if !reflect.DeepEqual(headerFields, wantHeader) {
+		t.Fatalf("history list header = %v, want %v", headerFields, wantHeader)
+	}
+
+	rows := make(map[string][]string, len(lines)-1)
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		rows[fields[0]] = fields
+	}
+
+	if got := rows["rec1"]; len(got) < 5 || got[4] != "major" {
+		t.Fatalf("history list pinned row = %v, want pin level major", got)
+	}
+	if got := rows["rec2"]; len(got) < 5 || got[4] != "-" {
+		t.Fatalf("history list unpinned row = %v, want pin level -", got)
 	}
 }
 

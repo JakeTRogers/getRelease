@@ -4,7 +4,22 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
+)
+
+// PinLevel represents the version pinning policy for an installed target.
+type PinLevel string
+
+const (
+	// PinNone means upgrades track the latest release.
+	PinNone PinLevel = ""
+	// PinPatch locks upgrades to the current exact release.
+	PinPatch PinLevel = "patch"
+	// PinMinor allows patch updates within the current minor release.
+	PinMinor PinLevel = "minor"
+	// PinMajor allows minor and patch updates within the current major release.
+	PinMajor PinLevel = "major"
 )
 
 // Record represents a single install/upgrade entry in history.
@@ -13,6 +28,7 @@ type Record struct {
 	Owner       string    `json:"owner"`
 	Repo        string    `json:"repo"`
 	Tag         string    `json:"tag"`
+	PinLevel    PinLevel  `json:"pinLevel,omitempty"`
 	Asset       AssetInfo `json:"asset"`
 	Binaries    []Binary  `json:"binaries"`
 	OS          string    `json:"os"`
@@ -32,6 +48,24 @@ type Binary struct {
 	Name        string `json:"name"`        // original name in archive
 	InstalledAs string `json:"installedAs"` // name on disk (may differ if renamed)
 	InstallPath string `json:"installPath"` // absolute path where installed
+}
+
+// ParsePinLevel parses a user-provided pin level.
+func ParsePinLevel(s string) (PinLevel, error) {
+	p := PinLevel(strings.ToLower(strings.TrimSpace(s)))
+	if p == PinNone || !isValidPinLevel(p) {
+		return PinNone, fmt.Errorf("invalid pin level %q", s)
+	}
+	return p, nil
+}
+
+func isValidPinLevel(p PinLevel) bool {
+	switch p {
+	case PinNone, PinPatch, PinMinor, PinMajor:
+		return true
+	default:
+		return false
+	}
 }
 
 // GenerateID returns an 8-character random hex string using crypto/rand.

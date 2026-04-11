@@ -39,6 +39,7 @@ func TestStore_SaveAndLoad(t *testing.T) {
 		Owner:    "alice",
 		Repo:     "proj",
 		Tag:      "v1",
+		PinLevel: PinMinor,
 		Asset:    AssetInfo{Name: "asset.tar.gz", URL: "https://example"},
 		Binaries: []Binary{{Name: "prog", InstalledAs: "prog", InstallPath: ""}},
 		OS:       "linux",
@@ -62,17 +63,20 @@ func TestStore_SaveAndLoad(t *testing.T) {
 	if rs[0].Owner != rec.Owner || rs[0].Repo != rec.Repo || rs[0].Tag != rec.Tag {
 		t.Fatalf("record mismatch: got %+v want %+v", rs[0], rec)
 	}
+	if rs[0].PinLevel != rec.PinLevel {
+		t.Fatalf("PinLevel = %q, want %q", rs[0].PinLevel, rec.PinLevel)
+	}
 }
 
 func TestStore_Add_Deduplication(t *testing.T) {
 	t.Parallel()
 	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
 
-	r1 := Record{Owner: "o", Repo: "r", Tag: "v1", Binaries: []Binary{{Name: "b1"}}}
+	r1 := Record{Owner: "o", Repo: "r", Tag: "v1", PinLevel: PinPatch, Binaries: []Binary{{Name: "b1"}}}
 	if err := s.Add(r1); err != nil {
 		t.Fatalf("Add r1: %v", err)
 	}
-	r2 := Record{Owner: "o", Repo: "r", Tag: "v2", Binaries: []Binary{{Name: "b2"}}}
+	r2 := Record{Owner: "o", Repo: "r", Tag: "v2", PinLevel: PinMinor, Binaries: []Binary{{Name: "b2"}}}
 	if err := s.Add(r2); err != nil {
 		t.Fatalf("Add r2: %v", err)
 	}
@@ -82,6 +86,122 @@ func TestStore_Add_Deduplication(t *testing.T) {
 	}
 	if rs[0].Tag != "v2" {
 		t.Fatalf("expected tag updated to v2, got %s", rs[0].Tag)
+	}
+	if rs[0].PinLevel != PinMinor {
+		t.Fatalf("expected PinLevel updated to %q, got %q", PinMinor, rs[0].PinLevel)
+	}
+}
+
+func TestStore_Add_ClearsPinLevel(t *testing.T) {
+	t.Parallel()
+	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+
+	if err := s.Add(Record{Owner: "o", Repo: "r", Tag: "v1.2.3", PinLevel: PinMajor}); err != nil {
+		t.Fatalf("Add initial record: %v", err)
+	}
+	if err := s.Add(Record{Owner: "o", Repo: "r", Tag: "v1.2.4"}); err != nil {
+		t.Fatalf("Add updated record: %v", err)
+	}
+
+	rs := s.Records()
+	if len(rs) != 1 {
+		t.Fatalf("expected 1 record after update, got %d", len(rs))
+	}
+	if rs[0].PinLevel != PinNone {
+		t.Fatalf("expected PinLevel to be cleared, got %q", rs[0].PinLevel)
+	}
+}
+
+func TestStore_LoadNormalizesInvalidPinLevel(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "history.json")
+	data := `{"version":1,"records":[{"id":"rec1","owner":"ok","repo":"r","tag":"v1.0.0","pinLevel":"bogus","asset":{"name":"a","url":"u"},"binaries":[]}]}`
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStore(p)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	rs := s.Records()
+	if len(rs) != 1 {
+		t.Fatalf("expected 1 valid record loaded, got %d", len(rs))
+	}
+	if rs[0].PinLevel != PinNone {
+		t.Fatalf("PinLevel = %q, want %q", rs[0].PinLevel, PinNone)
+	}
+}
+
+func TestStore_AddRejectsInvalidPinLevel(t *testing.T) {
+	t.Parallel()
+	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+
+	err := s.Add(Record{Owner: "o", Repo: "r", PinLevel: PinLevel("invalid")})
+	if err == nil {
+		t.Fatal("Add returned nil error, want invalid pin level error")
+	}
+	if got := err.Error(); got != `invalid pin level "invalid"` {
+		t.Fatalf("Add error = %q, want %q", got, `invalid pin level "invalid"`)
+	}
+	if len(s.Records()) != 0 {
+		t.Fatalf("records = %d, want 0", len(s.Records()))
+	}
+}
+
+func TestParsePinLevel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    PinLevel
+		wantErr bool
+	}{
+		{
+			name:  "patch",
+			input: "patch",
+			want:  PinPatch,
+		},
+		{
+			name:  "minor uppercase",
+			input: "MINOR",
+			want:  PinMinor,
+		},
+		{
+			name:  "major mixed case",
+			input: "Major",
+			want:  PinMajor,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:    "invalid value",
+			input:   "latest",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParsePinLevel(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParsePinLevel(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got != tt.want {
+				t.Fatalf("ParsePinLevel(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 
