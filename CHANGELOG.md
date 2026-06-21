@@ -1,3 +1,9 @@
+## v1.2.1 (2026-06-21)
+
+### Fix
+
+- **deps**: bump github.com/mattn/go-isatty from 0.0.20 to 0.0.22
+
 ## v1.2.0 (2026-04-11)
 
 ### Feat
