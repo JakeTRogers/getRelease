@@ -165,6 +165,9 @@ source <(getRelease completion zsh)
 
 # Fish
 getRelease completion fish | source
+
+# PowerShell
+getRelease completion powershell | Out-String | Invoke-Expression
 ```
 
 The completion callbacks are extended to read local install history. That gives you history-backed suggestions for commands such as:
@@ -185,6 +188,7 @@ Generate completion scripts explicitly if you prefer to install them into your s
 getRelease completion bash
 getRelease completion zsh
 getRelease completion fish
+getRelease completion powershell
 ```
 
 ## Notes

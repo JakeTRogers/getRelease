@@ -24,6 +24,25 @@ var configCmd = &cobra.Command{
 	Short: "Manage configuration",
 }
 
+// configKeys lists every configuration key known to getRelease, used to power
+// `config get`/`config set`/`config reset` shell completion. Keep this in sync
+// with internal/config/config.go's SetDefaults — TestConfigKeysMatchSetDefaults
+// in config_test.go cross-checks the two, so a drift here fails CI instead of
+// silently breaking completion.
+var configKeys = []struct {
+	value       string
+	description string
+}{
+	{value: "downloadDir", description: "directory for downloaded release assets"},
+	{value: "installDir", description: "directory for installed binaries"},
+	{value: "installCommand", description: "command template for installing binaries"},
+	{value: "autoExtract", description: "automatically extract downloaded archives"},
+	{value: "assetPreferences.os", description: "override detected OS for asset matching"},
+	{value: "assetPreferences.arch", description: "override detected architecture for asset matching"},
+	{value: "assetPreferences.formats", description: "preferred archive formats in priority order"},
+	{value: "assetPreferences.excludePatterns", description: "glob patterns for asset names to exclude"},
+}
+
 var configShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display effective configuration",
@@ -266,6 +285,11 @@ var configPathCmd = &cobra.Command{
 
 func init() {
 	configShowCmd.Flags().String("format", "text", "output format: text, json")
+	mustRegisterFlagCompletion(configShowCmd, "format", completeOutputFormatValues)
+
+	configGetCmd.ValidArgsFunction = completeConfigKeyArg
+	configSetCmd.ValidArgsFunction = completeConfigKeyArg
+	configResetCmd.ValidArgsFunction = completeConfigKeyArg
 
 	configCmd.AddCommand(configShowCmd)
 	configCmd.AddCommand(configGetCmd)

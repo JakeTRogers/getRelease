@@ -504,7 +504,9 @@ func init() {
 	historyListCmd.Flags().String("format", "text", "output format: text, json")
 	historyListCmd.Flags().String("sort", historyListSortBinary, "sort by: owner, repo, binary, installed")
 	mustRegisterFlagCompletion(historyListCmd, "sort", completeHistoryListSortValues)
+	mustRegisterFlagCompletion(historyListCmd, "format", completeOutputFormatValues)
 	historyClearCmd.Flags().Bool("force", false, "skip confirmation prompt")
 	historyPruneCmd.Flags().Bool("dry-run", false, "show what would be pruned without removing")
+	historyRemoveCmd.ValidArgsFunction = completeHistoryRemoveTargets
 	rootCmd.AddCommand(historyCmd)
 }

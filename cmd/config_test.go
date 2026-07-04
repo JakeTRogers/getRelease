@@ -2,7 +2,13 @@ package cmd
 
 import (
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
+
+	"github.com/spf13/viper"
+
+	internalconfig "github.com/JakeTRogers/getRelease/internal/config"
 )
 
 func TestParseConfigValue(t *testing.T) {
@@ -65,6 +71,26 @@ func TestParseConfigValue(t *testing.T) {
 			t.Fatal("parseConfigValue() error = nil, want error")
 		}
 	})
+}
+
+func TestConfigKeysMatchSetDefaults(t *testing.T) {
+	t.Parallel()
+
+	fresh := viper.New()
+	internalconfig.SetDefaults(fresh)
+
+	want := make([]string, 0, len(configKeys))
+	for _, k := range configKeys {
+		want = append(want, strings.ToLower(k.value))
+	}
+	sort.Strings(want)
+
+	got := fresh.AllKeys()
+	sort.Strings(got)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configKeys drifted from internal/config.SetDefaults: got %v, want %v", got, want)
+	}
 }
 
 func TestParseStringSliceValue(t *testing.T) {

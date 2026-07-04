@@ -31,6 +31,7 @@ func init() {
 	listCmd.MarkFlagsMutuallyExclusive("url", "owner")
 	listCmd.MarkFlagsMutuallyExclusive("url", "repo")
 	registerOwnerRepoHistoryCompletions(listCmd, false)
+	mustRegisterFlagCompletion(listCmd, "format", completeOutputFormatValues)
 
 	rootCmd.AddCommand(listCmd)
 }

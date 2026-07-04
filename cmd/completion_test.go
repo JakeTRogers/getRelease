@@ -85,6 +85,150 @@ func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 	}
 }
 
+func TestCompleteOutputFormatValues(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completeOutputFormatValues(&cobra.Command{}, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeOutputFormatValues() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+
+	want := []string{
+		"text\thuman-readable output",
+		"json\tmachine-readable JSON output",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeOutputFormatValues() = %v, want %v", got, want)
+	}
+
+	got, _ = completeOutputFormatValues(&cobra.Command{}, nil, "j")
+	want = []string{"json\tmachine-readable JSON output"}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeOutputFormatValues() prefix = %v, want %v", got, want)
+	}
+}
+
+func TestCompleteHistoryRemoveTargetsFromRecords(t *testing.T) {
+	t.Parallel()
+
+	records := []history.Record{
+		{
+			ID:    "rec1",
+			Owner: "cli",
+			Repo:  "alpha",
+			Tag:   "v1.0.0",
+			Binaries: []history.Binary{
+				{Name: "alpha", InstalledAs: "alpha"},
+			},
+		},
+		{
+			ID:    "rec2",
+			Owner: "ops",
+			Repo:  "beta",
+			Tag:   "v2.0.0",
+			Binaries: []history.Binary{
+				{Name: "shared", InstalledAs: "shared"},
+			},
+		},
+		{
+			ID:    "rec3",
+			Owner: "ops",
+			Repo:  "gamma",
+			Tag:   "v3.0.0",
+			Binaries: []history.Binary{
+				{Name: "shared", InstalledAs: "shared"},
+			},
+		},
+	}
+
+	got := completeHistoryRemoveTargetsFromRecords(records, "")
+	want := []string{
+		"alpha\tcli/alpha",
+		"shared\t2 matches, ambiguous - use ID",
+		"rec1\tcli/alpha@v1.0.0",
+		"rec2\tops/beta@v2.0.0",
+		"rec3\tops/gamma@v3.0.0",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeHistoryRemoveTargetsFromRecords() = %v, want %v", got, want)
+	}
+
+	got = completeHistoryRemoveTargetsFromRecords(records, "rec1")
+	want = []string{"rec1\tcli/alpha@v1.0.0"}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeHistoryRemoveTargetsFromRecords() prefix = %v, want %v", got, want)
+	}
+}
+
+func TestHistoryRemoveCommandTargetCompletion(t *testing.T) {
+	useTestCommandDeps(t, nil)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
+	presentPath := filepath.Join(t.TempDir(), "bin", "tool")
+	writeExecutableFile(t, presentPath)
+	writeHistoryRecords(t, []history.Record{
+		newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", presentPath),
+		newHistoryRecord("rec2", "cli", "missing", "v1.0.0", "missing", "missing", filepath.Join(t.TempDir(), "bin", "missing")),
+	})
+
+	got, directive := historyRemoveCmd.ValidArgsFunction(historyRemoveCmd, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("historyRemoveCmd ValidArgsFunction directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+
+	want := []string{
+		"missing\tcli/missing",
+		"tool\tcli/tool",
+		"rec1\tcli/tool@v1.0.0",
+		"rec2\tcli/missing@v1.0.0",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("historyRemoveCmd ValidArgsFunction = %v, want %v", got, want)
+	}
+}
+
+func TestCompleteConfigKeys(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completeConfigKeys(&cobra.Command{}, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeConfigKeys() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+	if len(got) != len(configKeys) {
+		t.Fatalf("completeConfigKeys() returned %d completions, want %d", len(got), len(configKeys))
+	}
+
+	got, _ = completeConfigKeys(&cobra.Command{}, nil, "asset")
+	want := []string{
+		"assetPreferences.os\toverride detected OS for asset matching",
+		"assetPreferences.arch\toverride detected architecture for asset matching",
+		"assetPreferences.formats\tpreferred archive formats in priority order",
+		"assetPreferences.excludePatterns\tglob patterns for asset names to exclude",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeConfigKeys() prefix = %v, want %v", got, want)
+	}
+}
+
+func TestConfigGetSetResetCommandKeyCompletion(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range []*cobra.Command{configGetCmd, configSetCmd, configResetCmd} {
+		got, directive := cmd.ValidArgsFunction(cmd, nil, "")
+		if directive != cobra.ShellCompDirectiveNoFileComp {
+			t.Fatalf("%s ValidArgsFunction directive = %v, want %v", cmd.Name(), directive, cobra.ShellCompDirectiveNoFileComp)
+		}
+		if len(got) != len(configKeys) {
+			t.Fatalf("%s ValidArgsFunction returned %d completions, want %d", cmd.Name(), len(got), len(configKeys))
+		}
+	}
+
+	got, _ := configSetCmd.ValidArgsFunction(configSetCmd, []string{"downloadDir"}, "")
+	if len(got) != 0 {
+		t.Fatalf("configSetCmd ValidArgsFunction with key already given = %v, want no completions", got)
+	}
+}
+
 func TestCompleteHistoryListSortValues(t *testing.T) {
 	t.Parallel()
 
