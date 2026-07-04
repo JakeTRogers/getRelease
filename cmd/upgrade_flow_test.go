@@ -83,6 +83,53 @@ func TestRunUpgradeDryRun(t *testing.T) {
 	}
 }
 
+func TestRunUpgradeDryRunUsesRecordedHost(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	client := &fakeReleaseClient{
+		getLatestRelease: func(_, _ string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v2.0.0",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://acme.ghe.com/cli/tool/releases/download/v2.0.0/tool_linux_amd64",
+					Size:        2048,
+				}},
+			}, nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	var gotHost string
+	newGitHubClient = func(host string) (releaseClient, error) {
+		gotHost = host
+		return client, nil
+	}
+
+	setTestConfig(filepath.Join(t.TempDir(), "downloads"), filepath.Join(t.TempDir(), "bin"))
+	rec := newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64", "tool", filepath.Join(t.TempDir(), "bin", "tool"))
+	rec.Host = "acme.ghe.com"
+	writeHistoryRecords(t, []history.Record{rec})
+
+	cmd := &cobra.Command{}
+	addUpgradeTestFlags(cmd)
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set dry-run: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runUpgrade(cmd, []string{"tool"}); err != nil {
+		t.Fatalf("runUpgrade() error: %v", err)
+	}
+	if gotHost != "acme.ghe.com" {
+		t.Fatalf("newGitHubClient host = %q, want %q", gotHost, "acme.ghe.com")
+	}
+	if !strings.Contains(out.String(), "Would upgrade https://acme.ghe.com/cli/tool/releases from v1.0.0 to v2.0.0") {
+		t.Fatalf("runUpgrade() output = %q, want dry-run summary with enterprise host", out.String())
+	}
+}
+
 func TestResolveUpgradeRecordPaths(t *testing.T) {
 	useTestCommandDeps(t, nil)
 
@@ -203,7 +250,7 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 				}},
 			}}, nil
 		},
-		downloadAsset: func(_ string, destPath string) (int64, error) {
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
 			return writeDownloadedBinary(t, destPath), nil
 		},
 	}

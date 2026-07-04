@@ -58,17 +58,25 @@ func TestInitConfigSetsLogLevel(t *testing.T) {
 }
 
 func TestResolveRepo(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
 	tests := []struct {
 		name      string
 		owner     string
 		repo      string
 		url       string
+		host      string
 		wantOwner string
 		wantRepo  string
+		wantHost  string
 		wantErr   string
 	}{
-		{name: "owner repo flags", owner: "cli", repo: "tool", wantOwner: "cli", wantRepo: "tool"},
-		{name: "url flag", url: "https://github.com/cli/tool", wantOwner: "cli", wantRepo: "tool"},
+		{name: "owner repo flags default to github.com", owner: "cli", repo: "tool", wantOwner: "cli", wantRepo: "tool", wantHost: "github.com"},
+		{name: "url flag", url: "https://github.com/cli/tool", wantOwner: "cli", wantRepo: "tool", wantHost: "github.com"},
+		{name: "enterprise url carries its host", url: "https://acme.ghe.com/cli/tool", wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com"},
+		{name: "host flag targets enterprise", owner: "cli", repo: "tool", host: "acme.ghe.com", wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com"},
+		{name: "host flag rejects unsupported host", owner: "cli", repo: "tool", host: "github.acme.internal", wantErr: "unsupported GitHub host"},
+		{name: "unsupported url host", url: "https://gitlab.com/cli/tool", wantErr: "not a supported GitHub URL"},
 		{name: "missing repo", owner: "cli", wantErr: "--repo is required"},
 		{name: "missing owner", repo: "tool", wantErr: "--owner is required"},
 		{name: "missing all", wantErr: "specify a repository"},
@@ -79,6 +87,7 @@ func TestResolveRepo(t *testing.T) {
 		cmd.Flags().String("owner", "", "")
 		cmd.Flags().String("repo", "", "")
 		cmd.Flags().String("url", "", "")
+		cmd.Flags().String("host", "", "")
 
 		if err := cmd.Flags().Set("owner", tt.owner); err != nil {
 			t.Fatalf("%s: set owner: %v", tt.name, err)
@@ -89,8 +98,11 @@ func TestResolveRepo(t *testing.T) {
 		if err := cmd.Flags().Set("url", tt.url); err != nil {
 			t.Fatalf("%s: set url: %v", tt.name, err)
 		}
+		if err := cmd.Flags().Set("host", tt.host); err != nil {
+			t.Fatalf("%s: set host: %v", tt.name, err)
+		}
 
-		owner, repo, err := resolveRepo(cmd)
+		owner, repo, host, err := resolveRepo(cmd)
 		if tt.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("%s: resolveRepo() error = %v, want substring %q", tt.name, err, tt.wantErr)
@@ -103,7 +115,58 @@ func TestResolveRepo(t *testing.T) {
 		if owner != tt.wantOwner || repo != tt.wantRepo {
 			t.Fatalf("%s: resolveRepo() = %s/%s, want %s/%s", tt.name, owner, repo, tt.wantOwner, tt.wantRepo)
 		}
+		if host != tt.wantHost {
+			t.Fatalf("%s: resolveRepo() host = %q, want %q", tt.name, host, tt.wantHost)
+		}
 	}
+}
+
+func TestResolveRepoUsesHistoryHost(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
+	ghe := newHistoryRecord("id-1", "cli", "tool", "v1.0.0", "tool", "tool", "/usr/local/bin/tool")
+	ghe.Host = "acme.ghe.com"
+	public := newHistoryRecord("id-2", "cli", "other", "v1.0.0", "other", "other", "/usr/local/bin/other")
+	writeHistoryRecords(t, []history.Record{ghe, public})
+
+	newCmd := func(owner, repo, host string) *cobra.Command {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("owner", owner, "")
+		cmd.Flags().String("repo", repo, "")
+		cmd.Flags().String("url", "", "")
+		cmd.Flags().String("host", host, "")
+		return cmd
+	}
+
+	t.Run("recorded enterprise host used automatically", func(t *testing.T) {
+		_, _, host, err := resolveRepo(newCmd("cli", "tool", ""))
+		if err != nil {
+			t.Fatalf("resolveRepo() error = %v", err)
+		}
+		if host != "acme.ghe.com" {
+			t.Errorf("resolveRepo() host = %q, want %q", host, "acme.ghe.com")
+		}
+	})
+
+	t.Run("record without host defaults to github.com", func(t *testing.T) {
+		_, _, host, err := resolveRepo(newCmd("cli", "other", ""))
+		if err != nil {
+			t.Fatalf("resolveRepo() error = %v", err)
+		}
+		if host != "github.com" {
+			t.Errorf("resolveRepo() host = %q, want %q", host, "github.com")
+		}
+	})
+
+	t.Run("host flag overrides recorded host", func(t *testing.T) {
+		_, _, host, err := resolveRepo(newCmd("cli", "tool", "github.com"))
+		if err != nil {
+			t.Fatalf("resolveRepo() error = %v", err)
+		}
+		if host != "github.com" {
+			t.Errorf("resolveRepo() host = %q, want %q", host, "github.com")
+		}
+	})
 }
 
 func TestRunRootDownloadOnlyJSON(t *testing.T) {
@@ -120,7 +183,7 @@ func TestRunRootDownloadOnlyJSON(t *testing.T) {
 				}},
 			}, nil
 		},
-		downloadAsset: func(_ string, destPath string) (int64, error) {
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
 			return writeDownloadedBinary(t, destPath), nil
 		},
 	}
@@ -186,7 +249,7 @@ func TestRunRootInstallsBinaryAndUpdatesHistory(t *testing.T) {
 				}},
 			}, nil
 		},
-		downloadAsset: func(_ string, destPath string) (int64, error) {
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
 			return writeDownloadedBinary(t, destPath), nil
 		},
 	}
@@ -236,6 +299,76 @@ func TestRunRootInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	if len(records[0].Binaries) != 1 || records[0].Binaries[0].InstalledAs != "tool" {
 		t.Fatalf("history binaries = %+v, want installed binary entry", records[0].Binaries)
 	}
+	if records[0].Host != "" {
+		t.Fatalf("history record host = %q, want empty for github.com", records[0].Host)
+	}
+}
+
+func TestRunRootRecordsEnterpriseHostInHistory(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v2.0.0",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://acme.ghe.com/cli/tool/releases/download/v2.0.0/tool_linux_amd64",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	var gotHost string
+	newGitHubClient = func(host string) (releaseClient, error) {
+		gotHost = host
+		return client, nil
+	}
+
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatalf("create install dir: %v", err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	if err := cmd.Flags().Set("host", "acme.ghe.com"); err != nil {
+		t.Fatalf("set host: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	if gotHost != "acme.ghe.com" {
+		t.Fatalf("newGitHubClient host = %q, want %q", gotHost, "acme.ghe.com")
+	}
+	if !strings.Contains(out.String(), "Review the release notes: https://acme.ghe.com/cli/tool/releases/tag/v2.0.0") {
+		t.Fatalf("runRoot() output = %q, want enterprise release notes link", out.String())
+	}
+
+	records := loadHistoryRecords(t)
+	if len(records) != 1 {
+		t.Fatalf("history records = %d, want 1", len(records))
+	}
+	if records[0].Host != "acme.ghe.com" {
+		t.Fatalf("history record host = %q, want %q", records[0].Host, "acme.ghe.com")
+	}
 }
 
 func TestRunRootPreservesExistingPinLevel(t *testing.T) {
@@ -254,7 +387,7 @@ func TestRunRootPreservesExistingPinLevel(t *testing.T) {
 				}},
 			}, nil
 		},
-		downloadAsset: func(_ string, destPath string) (int64, error) {
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
 			return writeDownloadedBinary(t, destPath), nil
 		},
 	}
@@ -306,7 +439,7 @@ func TestRunRootPrefersBestAssetAmongMultipleMatches(t *testing.T) {
 				},
 			}, nil
 		},
-		downloadAsset: func(_ string, destPath string) (int64, error) {
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
 			return writeDownloadedBinary(t, destPath), nil
 		},
 	}

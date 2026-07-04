@@ -24,8 +24,13 @@ func (r Release) DisplayName() string {
 
 // Asset represents a downloadable file attached to a GitHub release.
 type Asset struct {
-	Name          string `json:"name"`
-	DownloadURL   string `json:"browser_download_url"`
+	Name string `json:"name"`
+	// DownloadURL is the public browser download URL, used for anonymous
+	// downloads.
+	DownloadURL string `json:"browser_download_url"`
+	// APIURL is the REST API endpoint for the asset, used for authenticated
+	// downloads since private-repo assets are only served through the API.
+	APIURL        string `json:"url"`
 	Size          int64  `json:"size"`
 	ContentType   string `json:"content_type"`
 	DownloadCount int    `json:"download_count"`

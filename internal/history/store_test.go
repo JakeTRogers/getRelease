@@ -76,7 +76,7 @@ func TestStore_Add_Deduplication(t *testing.T) {
 	if err := s.Add(r1); err != nil {
 		t.Fatalf("Add r1: %v", err)
 	}
-	r2 := Record{Owner: "o", Repo: "r", Tag: "v2", PinLevel: PinMinor, Binaries: []Binary{{Name: "b2"}}}
+	r2 := Record{Owner: "o", Repo: "r", Host: "acme.ghe.com", Tag: "v2", PinLevel: PinMinor, Binaries: []Binary{{Name: "b2"}}}
 	if err := s.Add(r2); err != nil {
 		t.Fatalf("Add r2: %v", err)
 	}
@@ -89,6 +89,9 @@ func TestStore_Add_Deduplication(t *testing.T) {
 	}
 	if rs[0].PinLevel != PinMinor {
 		t.Fatalf("expected PinLevel updated to %q, got %q", PinMinor, rs[0].PinLevel)
+	}
+	if rs[0].Host != "acme.ghe.com" {
+		t.Fatalf("expected Host updated to acme.ghe.com, got %q", rs[0].Host)
 	}
 }
 

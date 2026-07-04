@@ -12,6 +12,7 @@ func TestParseRepoURL(t *testing.T) {
 		url       string
 		wantOwner string
 		wantRepo  string
+		wantHost  string
 		wantErr   bool
 	}{
 		{
@@ -19,42 +20,63 @@ func TestParseRepoURL(t *testing.T) {
 			url:       "https://github.com/derailed/k9s",
 			wantOwner: "derailed",
 			wantRepo:  "k9s",
+			wantHost:  "github.com",
 		},
 		{
 			name:      "URL with trailing slash",
 			url:       "https://github.com/derailed/k9s/",
 			wantOwner: "derailed",
 			wantRepo:  "k9s",
+			wantHost:  "github.com",
 		},
 		{
 			name:      "URL with .git suffix",
 			url:       "https://github.com/derailed/k9s.git",
 			wantOwner: "derailed",
 			wantRepo:  "k9s",
+			wantHost:  "github.com",
 		},
 		{
 			name:      "URL with extra path segments",
 			url:       "https://github.com/derailed/k9s/releases/tag/v1.0",
 			wantOwner: "derailed",
 			wantRepo:  "k9s",
+			wantHost:  "github.com",
 		},
 		{
 			name:      "without scheme",
 			url:       "github.com/owner/repo",
 			wantOwner: "owner",
 			wantRepo:  "repo",
+			wantHost:  "github.com",
 		},
 		{
 			name:      "HTTP scheme",
 			url:       "http://github.com/owner/repo",
 			wantOwner: "owner",
 			wantRepo:  "repo",
+			wantHost:  "github.com",
 		},
 		{
-			name:      "www prefix",
+			name:      "www prefix normalized",
 			url:       "https://www.github.com/owner/repo",
 			wantOwner: "owner",
 			wantRepo:  "repo",
+			wantHost:  "github.com",
+		},
+		{
+			name:      "enterprise host taken from URL",
+			url:       "https://acme.ghe.com/owner/repo",
+			wantOwner: "owner",
+			wantRepo:  "repo",
+			wantHost:  "acme.ghe.com",
+		},
+		{
+			name:      "enterprise host without scheme",
+			url:       "acme.ghe.com/owner/repo",
+			wantOwner: "owner",
+			wantRepo:  "repo",
+			wantHost:  "acme.ghe.com",
 		},
 		{
 			name:    "empty URL",
@@ -64,6 +86,11 @@ func TestParseRepoURL(t *testing.T) {
 		{
 			name:    "not a GitHub URL",
 			url:     "https://gitlab.com/owner/repo",
+			wantErr: true,
+		},
+		{
+			name:    "self-hosted GHES URL rejected",
+			url:     "https://github.acme.internal/owner/repo",
 			wantErr: true,
 		},
 		{
@@ -81,7 +108,7 @@ func TestParseRepoURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			owner, repo, err := ParseRepoURL(tt.url)
+			owner, repo, host, err := ParseRepoURL(tt.url)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseRepoURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
 				return
@@ -94,6 +121,9 @@ func TestParseRepoURL(t *testing.T) {
 			}
 			if repo != tt.wantRepo {
 				t.Errorf("ParseRepoURL(%q) repo = %q, want %q", tt.url, repo, tt.wantRepo)
+			}
+			if host != tt.wantHost {
+				t.Errorf("ParseRepoURL(%q) host = %q, want %q", tt.url, host, tt.wantHost)
 			}
 		})
 	}

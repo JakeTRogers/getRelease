@@ -1,7 +1,9 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -208,6 +210,32 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClientForHost(t *testing.T) {
+	t.Parallel()
+
+	t.Run("github.com uses default base URL", func(t *testing.T) {
+		t.Parallel()
+		for _, host := range []string{"", "github.com"} {
+			c := NewClientForHost(host)
+			if c.baseURL != defaultBaseURL {
+				t.Errorf("NewClientForHost(%q).baseURL = %q, want %q", host, c.baseURL, defaultBaseURL)
+			}
+		}
+	})
+
+	t.Run("enterprise host uses api.<host> base URL", func(t *testing.T) {
+		t.Parallel()
+		c := NewClientForHost("acme.ghe.com")
+		want := "https://api.acme.ghe.com"
+		if c.baseURL != want {
+			t.Errorf("NewClientForHost(\"acme.ghe.com\").baseURL = %q, want %q", c.baseURL, want)
+		}
+		if c.webHost != "acme.ghe.com" {
+			t.Errorf("NewClientForHost(\"acme.ghe.com\").webHost = %q, want %q", c.webHost, "acme.ghe.com")
+		}
+	})
+}
+
 func TestClient_DownloadAsset(t *testing.T) {
 	t.Parallel()
 
@@ -225,7 +253,7 @@ func TestClient_DownloadAsset(t *testing.T) {
 
 		client := NewClientWithHTTP(srv.Client(), srv.URL)
 		dest := filepath.Join(t.TempDir(), "asset.tar.gz")
-		n, err := client.DownloadAsset(srv.URL+"/download/asset.tar.gz", dest)
+		n, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/download/asset.tar.gz"}, dest)
 		if err != nil {
 			t.Fatalf("DownloadAsset() error: %v", err)
 		}
@@ -250,7 +278,7 @@ func TestClient_DownloadAsset(t *testing.T) {
 
 		client := NewClientWithHTTP(srv.Client(), srv.URL)
 		dest := filepath.Join(t.TempDir(), "missing")
-		_, err := client.DownloadAsset(srv.URL+"/download/missing", dest)
+		_, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/download/missing"}, dest)
 		if err == nil {
 			t.Fatal("expected error for 404")
 		}
@@ -386,4 +414,246 @@ func isRateLimitError(err error, target **RateLimitError) bool {
 		}
 	}
 	return false
+}
+
+func TestClient_AuthorizationHeader(t *testing.T) {
+	t.Parallel()
+
+	release := Release{TagName: "v1.0.0"}
+
+	newServer := func(t *testing.T, gotAuth *string) *httptest.Server {
+		t.Helper()
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(release); err != nil {
+				t.Errorf("encode release: %v", err)
+			}
+		}))
+	}
+
+	t.Run("token sent on API requests", func(t *testing.T) {
+		t.Parallel()
+		var gotAuth string
+		srv := newServer(t, &gotAuth)
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL).WithToken("test-token")
+		if _, err := client.GetLatestRelease("owner", "repo"); err != nil {
+			t.Fatalf("GetLatestRelease() error: %v", err)
+		}
+		if gotAuth != "Bearer test-token" {
+			t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer test-token")
+		}
+	})
+
+	t.Run("no header without token", func(t *testing.T) {
+		t.Parallel()
+		var gotAuth string
+		srv := newServer(t, &gotAuth)
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL)
+		if _, err := client.GetLatestRelease("owner", "repo"); err != nil {
+			t.Fatalf("GetLatestRelease() error: %v", err)
+		}
+		if gotAuth != "" {
+			t.Errorf("Authorization header = %q, want empty", gotAuth)
+		}
+	})
+
+	t.Run("no header on asset downloads from non-github hosts", func(t *testing.T) {
+		t.Parallel()
+		var gotAuth string
+		srv := newServer(t, &gotAuth)
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL).WithToken("test-token")
+		dest := filepath.Join(t.TempDir(), "asset")
+		if _, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/download/asset"}, dest); err != nil {
+			t.Fatalf("DownloadAsset() error: %v", err)
+		}
+		if gotAuth != "" {
+			t.Errorf("Authorization header = %q, want empty on downloads", gotAuth)
+		}
+	})
+
+	t.Run("token sent to github.com but stripped after cross-host redirect", func(t *testing.T) {
+		t.Parallel()
+
+		var githubAuth, cdnAuth string
+		cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cdnAuth = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte("asset-bytes"))
+		}))
+		defer cdn.Close()
+
+		gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			githubAuth = r.Header.Get("Authorization")
+			http.Redirect(w, r, "http://objects.githubusercontent.com/asset", http.StatusFound)
+		}))
+		defer gh.Close()
+
+		// Route requests for github.com and objects.githubusercontent.com to
+		// the local test servers so we can exercise real cross-host redirect
+		// handling without touching the network.
+		dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			switch host {
+			case "github.com":
+				return net.Dial(network, gh.Listener.Addr().String())
+			case "objects.githubusercontent.com":
+				return net.Dial(network, cdn.Listener.Addr().String())
+			default:
+				return net.Dial(network, addr)
+			}
+		}
+		httpClient := &http.Client{Transport: &http.Transport{DialContext: dial}}
+
+		client := NewClientWithHTTP(httpClient, "").WithToken("test-token")
+		dest := filepath.Join(t.TempDir(), "asset")
+		if _, err := client.DownloadAsset(Asset{DownloadURL: "http://github.com/owner/repo/releases/download/v1/asset"}, dest); err != nil {
+			t.Fatalf("DownloadAsset() error: %v", err)
+		}
+		if githubAuth != "Bearer test-token" {
+			t.Errorf("github.com Authorization header = %q, want %q", githubAuth, "Bearer test-token")
+		}
+		if cdnAuth != "" {
+			t.Errorf("CDN Authorization header = %q, want empty after cross-host redirect", cdnAuth)
+		}
+	})
+
+	t.Run("authenticated download prefers API asset URL", func(t *testing.T) {
+		t.Parallel()
+
+		var apiAuth string
+		var apiHits, webHits int
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			apiHits++
+			apiAuth = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte("asset-bytes"))
+		}))
+		defer api.Close()
+
+		web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			webHits++
+			_, _ = w.Write([]byte("asset-bytes"))
+		}))
+		defer web.Close()
+
+		dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			switch host {
+			case "api.github.com":
+				return net.Dial(network, api.Listener.Addr().String())
+			case "github.com":
+				return net.Dial(network, web.Listener.Addr().String())
+			default:
+				return net.Dial(network, addr)
+			}
+		}
+		httpClient := &http.Client{Transport: &http.Transport{DialContext: dial}}
+
+		client := NewClientWithHTTP(httpClient, "").WithToken("test-token")
+		dest := filepath.Join(t.TempDir(), "asset")
+		asset := Asset{
+			DownloadURL: "http://github.com/owner/repo/releases/download/v1/asset",
+			APIURL:      "http://api.github.com/repos/owner/repo/releases/assets/1",
+		}
+		if _, err := client.DownloadAsset(asset, dest); err != nil {
+			t.Fatalf("DownloadAsset() error: %v", err)
+		}
+		if apiHits != 1 || webHits != 0 {
+			t.Errorf("hits = api %d, web %d; want api 1, web 0", apiHits, webHits)
+		}
+		if apiAuth != "Bearer test-token" {
+			t.Errorf("API Authorization header = %q, want %q", apiAuth, "Bearer test-token")
+		}
+	})
+
+	t.Run("anonymous download uses browser URL without auth", func(t *testing.T) {
+		t.Parallel()
+		var gotAuth string
+		srv := newServer(t, &gotAuth)
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL)
+		dest := filepath.Join(t.TempDir(), "asset")
+		asset := Asset{
+			DownloadURL: srv.URL + "/download/asset",
+			APIURL:      srv.URL + "/repos/owner/repo/releases/assets/1",
+		}
+		if _, err := client.DownloadAsset(asset, dest); err != nil {
+			t.Fatalf("DownloadAsset() error: %v", err)
+		}
+		if gotAuth != "" {
+			t.Errorf("Authorization header = %q, want empty for anonymous download", gotAuth)
+		}
+	})
+}
+
+func TestClient_IsTrustedDownloadHost(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default client trusts github.com", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name string
+			url  string
+			want bool
+		}{
+			{"github.com", "https://github.com/owner/repo/releases/download/v1/asset", true},
+			{"www.github.com", "https://www.github.com/owner/repo/releases/download/v1/asset", true},
+			{"case insensitive", "https://GitHub.Com/owner/repo/releases/download/v1/asset", true},
+			{"api host", "https://api.github.com/repos/owner/repo/releases/assets/1", true},
+			{"cdn host", "https://objects.githubusercontent.com/asset", false},
+			{"enterprise host", "https://acme.ghe.com/owner/repo/releases/download/v1/asset", false},
+			{"enterprise api host", "https://api.acme.ghe.com/repos/owner/repo/releases/assets/1", false},
+			{"invalid url", "://not-a-url", false},
+		}
+
+		client := NewClient()
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				if got := client.isTrustedDownloadHost(tt.url); got != tt.want {
+					t.Errorf("isTrustedDownloadHost(%q) = %v, want %v", tt.url, got, tt.want)
+				}
+			})
+		}
+	})
+
+	t.Run("enterprise client trusts only its own host", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name string
+			url  string
+			want bool
+		}{
+			{"matching enterprise host", "https://acme.ghe.com/owner/repo/releases/download/v1/asset", true},
+			{"matching enterprise api host", "https://api.acme.ghe.com/repos/owner/repo/releases/assets/1", true},
+			{"case insensitive", "https://Acme.Ghe.Com/owner/repo/releases/download/v1/asset", true},
+			{"github.com not trusted", "https://github.com/owner/repo/releases/download/v1/asset", false},
+			{"api.github.com not trusted", "https://api.github.com/repos/owner/repo/releases/assets/1", false},
+			{"different enterprise host", "https://other.ghe.com/owner/repo/releases/download/v1/asset", false},
+		}
+
+		client := NewClientForHost("acme.ghe.com")
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				if got := client.isTrustedDownloadHost(tt.url); got != tt.want {
+					t.Errorf("isTrustedDownloadHost(%q) = %v, want %v", tt.url, got, tt.want)
+				}
+			})
+		}
+	})
 }

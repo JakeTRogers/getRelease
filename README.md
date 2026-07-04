@@ -141,6 +141,33 @@ export GETRELEASE_INSTALLDIR="$HOME/.local/bin"
 export GETRELEASE_ASSETPREFERENCES_FORMATS='["tar.gz","zip"]'
 ```
 
+## Authentication
+
+API requests are anonymous by default, which is subject to GitHub's 60 requests/hour per-IP rate limit. To authenticate (5,000 requests/hour, plus access to private-repo releases), getRelease uses the first token it finds:
+
+1. The `token` config key, or the `GETRELEASE_TOKEN` environment variable
+2. The `GH_TOKEN` environment variable
+3. The `GITHUB_TOKEN` environment variable (set automatically in GitHub Codespaces and Actions)
+4. The [gh CLI](https://cli.github.com/)'s stored credentials, via `gh auth token`
+
+If none are found, requests silently fall back to anonymous. Prefer environment variables or `gh` over storing a token in `config.yaml`; `config show` redacts the token either way.
+
+### GitHub Enterprise Cloud with data residency (`*.ghe.com`)
+
+getRelease targets `github.com` by default. Targeting a GitHub Enterprise Cloud tenant with data residency (a `*.ghe.com` host) is always explicit — environment variables like `GH_HOST` are deliberately ignored so an ambient setting can never silently retarget a command:
+
+```bash
+# the URL's host is used directly
+getRelease --url https://acme.ghe.com/acme/tool
+
+# or name the host explicitly with --owner/--repo
+getRelease --owner acme --repo tool --host acme.ghe.com
+```
+
+The host a package was installed from is recorded in install history, so `getRelease upgrade`, and later `--owner`/`--repo` invocations for that same package, target the right host automatically without repeating `--host`.
+
+getRelease derives the REST API endpoint (`https://api.acme.ghe.com`) and web URLs from the host, and passes `--hostname` to `gh auth token` so the right stored credentials are used. Self-hosted GitHub Enterprise Server (with a customer-owned domain and `/api/v3` path) is not supported.
+
 The main commands are:
 
 - `getRelease`: download, extract, and install a release asset

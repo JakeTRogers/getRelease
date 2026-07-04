@@ -1,0 +1,97 @@
+package github
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestResolveToken(t *testing.T) {
+	origGHAuthToken := ghAuthToken
+	t.Cleanup(func() { ghAuthToken = origGHAuthToken })
+
+	tests := []struct {
+		name        string
+		configToken string
+		ghToken     string
+		githubToken string
+		ghCLIToken  string
+		wantToken   string
+		wantSource  string
+	}{
+		{
+			name:        "config token wins over everything",
+			configToken: "cfg-token",
+			ghToken:     "gh-env-token",
+			githubToken: "github-env-token",
+			ghCLIToken:  "gh-cli-token",
+			wantToken:   "cfg-token",
+			wantSource:  "config",
+		},
+		{
+			name:        "GH_TOKEN wins over GITHUB_TOKEN",
+			ghToken:     "gh-env-token",
+			githubToken: "github-env-token",
+			ghCLIToken:  "gh-cli-token",
+			wantToken:   "gh-env-token",
+			wantSource:  "GH_TOKEN",
+		},
+		{
+			name:        "GITHUB_TOKEN wins over gh CLI",
+			githubToken: "github-env-token",
+			ghCLIToken:  "gh-cli-token",
+			wantToken:   "github-env-token",
+			wantSource:  "GITHUB_TOKEN",
+		},
+		{
+			name:       "gh CLI is the last resort",
+			ghCLIToken: "gh-cli-token",
+			wantToken:  "gh-cli-token",
+			wantSource: "gh CLI",
+		},
+		{
+			name:       "no token anywhere falls back to anonymous",
+			wantToken:  "",
+			wantSource: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GH_TOKEN", tt.ghToken)
+			t.Setenv("GITHUB_TOKEN", tt.githubToken)
+			ghAuthToken = func(host string) string { return tt.ghCLIToken }
+
+			token, source := ResolveToken(tt.configToken, "")
+			if token != tt.wantToken {
+				t.Errorf("ResolveToken() token = %q, want %q", token, tt.wantToken)
+			}
+			if source != tt.wantSource {
+				t.Errorf("ResolveToken() source = %q, want %q", source, tt.wantSource)
+			}
+		})
+	}
+}
+
+func TestGhAuthTokenArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want []string
+	}{
+		{"empty host omits hostname flag", "", []string{"auth", "token"}},
+		{"github.com omits hostname flag", "github.com", []string{"auth", "token"}},
+		{"enterprise host passes hostname flag", "acme.ghe.com", []string{"auth", "token", "--hostname", "acme.ghe.com"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ghAuthTokenArgs(tt.host)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ghAuthTokenArgs(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}

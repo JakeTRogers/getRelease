@@ -33,6 +33,9 @@ type AppConfig struct {
 	InstallCommand string `mapstructure:"installCommand" yaml:"installCommand"`
 	// AutoExtract controls whether archives are automatically extracted after download.
 	AutoExtract bool `mapstructure:"autoExtract" yaml:"autoExtract"`
+	// Token authenticates GitHub API requests. Prefer the GETRELEASE_TOKEN,
+	// GH_TOKEN, or GITHUB_TOKEN environment variables over storing it here.
+	Token string `mapstructure:"token" yaml:"token"`
 	// AssetPreferences controls asset filtering and ranking.
 	AssetPreferences AssetPreferences `mapstructure:"assetPreferences" yaml:"assetPreferences"`
 }
@@ -48,6 +51,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("installDir", DefaultInstallDir())
 	v.SetDefault("installCommand", "sudo install -m 755 {source} {target}")
 	v.SetDefault("autoExtract", true)
+	v.SetDefault("token", "")
 	v.SetDefault("assetPreferences.os", "")
 	v.SetDefault("assetPreferences.arch", "")
 	v.SetDefault("assetPreferences.formats", []string{"tar.gz", "zip"})
