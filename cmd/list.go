@@ -24,12 +24,14 @@ func init() {
 	listCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	listCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
 	listCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
+	listCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	listCmd.Flags().StringP("tag", "t", "", "list assets for this release tag instead of listing releases")
 	listCmd.Flags().IntP("limit", "l", 30, "number of releases to show")
 	listCmd.Flags().String("format", "text", "output format: text, json")
 
 	listCmd.MarkFlagsMutuallyExclusive("url", "owner")
 	listCmd.MarkFlagsMutuallyExclusive("url", "repo")
+	listCmd.MarkFlagsMutuallyExclusive("url", "host")
 	registerOwnerRepoHistoryCompletions(listCmd, false)
 	mustRegisterFlagCompletion(listCmd, "format", completeOutputFormatValues)
 
@@ -37,7 +39,7 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, _ []string) error {
-	owner, repo, err := resolveRepo(cmd)
+	owner, repo, host, err := resolveRepo(cmd)
 	if err != nil {
 		return err
 	}
@@ -45,15 +47,18 @@ func runList(cmd *cobra.Command, _ []string) error {
 	tag, _ := cmd.Flags().GetString("tag")
 	format, _ := cmd.Flags().GetString("format")
 
-	client := newGitHubClient()
+	client, err := newGitHubClient(host)
+	if err != nil {
+		return err
+	}
 
 	if tag != "" {
-		return listAssets(cmd, client, owner, repo, tag, format)
+		return listAssets(cmd, client, host, owner, repo, tag, format)
 	}
-	return listReleases(cmd, client, owner, repo, format)
+	return listReleases(cmd, client, host, owner, repo, format)
 }
 
-func listReleases(cmd *cobra.Command, client releaseClient, owner, repo, format string) error {
+func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, format string) error {
 	limit, _ := cmd.Flags().GetInt("limit")
 
 	releases, err := client.ListReleases(owner, repo, limit)
@@ -92,13 +97,13 @@ func listReleases(cmd *cobra.Command, client releaseClient, owner, repo, format 
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "\nBrowse releases: %s\n", githubRepoReleasesURL(owner, repo)); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "\nBrowse releases: %s\n", githubRepoReleasesURL(host, owner, repo)); err != nil {
 		return fmt.Errorf("writing releases footer: %w", err)
 	}
 	return nil
 }
 
-func listAssets(cmd *cobra.Command, client releaseClient, owner, repo, tag, format string) error {
+func listAssets(cmd *cobra.Command, client releaseClient, host, owner, repo, tag, format string) error {
 	release, err := client.GetReleaseByTag(owner, repo, tag)
 	if err != nil {
 		return fmt.Errorf("fetching release %s: %w", tag, err)
@@ -130,7 +135,7 @@ func listAssets(cmd *cobra.Command, client releaseClient, owner, repo, tag, form
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "\nBrowse this release: %s\n", githubReleasePageURL(owner, repo, release)); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "\nBrowse this release: %s\n", githubReleasePageURL(host, owner, repo, release)); err != nil {
 		return fmt.Errorf("writing assets footer: %w", err)
 	}
 	return nil

@@ -18,7 +18,7 @@ type fakeReleaseClient struct {
 	getLatestRelease func(owner, repo string) (*github.Release, error)
 	getReleaseByTag  func(owner, repo, tag string) (*github.Release, error)
 	listReleases     func(owner, repo string, limit int) ([]github.Release, error)
-	downloadAsset    func(downloadURL, destPath string) (int64, error)
+	downloadAsset    func(asset github.Asset, destPath string) (int64, error)
 }
 
 func (f *fakeReleaseClient) GetLatestRelease(owner, repo string) (*github.Release, error) {
@@ -42,11 +42,11 @@ func (f *fakeReleaseClient) ListReleases(owner, repo string, limit int) ([]githu
 	return f.listReleases(owner, repo, limit)
 }
 
-func (f *fakeReleaseClient) DownloadAsset(downloadURL, destPath string) (int64, error) {
+func (f *fakeReleaseClient) DownloadAsset(asset github.Asset, destPath string) (int64, error) {
 	if f.downloadAsset == nil {
 		return 0, nil
 	}
-	return f.downloadAsset(downloadURL, destPath)
+	return f.downloadAsset(asset, destPath)
 }
 
 func useTestCommandDeps(t *testing.T, client releaseClient) {
@@ -59,8 +59,8 @@ func useTestCommandDeps(t *testing.T, client releaseClient) {
 	oldViper := cfgViper
 
 	if client != nil {
-		newGitHubClient = func() releaseClient {
-			return client
+		newGitHubClient = func(string) (releaseClient, error) {
+			return client, nil
 		}
 	}
 	selectItems = func(_ []string, _ string) (int, error) {
@@ -96,6 +96,7 @@ func addRootTestFlags(cmd *cobra.Command) {
 	cmd.Flags().String("owner", "", "")
 	cmd.Flags().String("repo", "", "")
 	cmd.Flags().String("url", "", "")
+	cmd.Flags().String("host", "", "")
 	cmd.Flags().String("tag", "", "")
 	cmd.Flags().Bool("download-only", false, "")
 	cmd.Flags().String("install-as", "", "")
@@ -106,6 +107,7 @@ func addListTestFlags(cmd *cobra.Command) {
 	cmd.Flags().String("owner", "", "")
 	cmd.Flags().String("repo", "", "")
 	cmd.Flags().String("url", "", "")
+	cmd.Flags().String("host", "", "")
 	cmd.Flags().String("tag", "", "")
 	cmd.Flags().Int("limit", 30, "")
 	cmd.Flags().String("format", "text", "")

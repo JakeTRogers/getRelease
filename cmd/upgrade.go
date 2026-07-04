@@ -114,7 +114,7 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	for i := range records {
 		rec := records[i]
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s : %s\n", rec.Owner, rec.Repo, githubRepoReleasesURL(rec.Owner, rec.Repo)); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s : %s\n", rec.Owner, rec.Repo, githubRepoReleasesURL(rec.Host, rec.Owner, rec.Repo)); err != nil {
 			return fmt.Errorf("writing upgrade header for %s/%s: %w", rec.Owner, rec.Repo, err)
 		}
 
@@ -204,7 +204,12 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	owner := rec.Owner
 	repo := rec.Repo
 
-	client := newGitHubClient()
+	// Target the host the package was originally installed from (empty
+	// means github.com).
+	client, err := newGitHubClient(rec.Host)
+	if err != nil {
+		return false, err
+	}
 	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
 	if err != nil {
 		return false, err
@@ -249,7 +254,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	// Dry-run: show what would happen
 	if dryRun {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Would upgrade %s from %s to %s\n", githubRepoReleasesURL(owner, repo), rec.Tag, release.TagName); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Would upgrade %s from %s to %s\n", githubRepoReleasesURL(rec.Host, owner, repo), rec.Tag, release.TagName); err != nil {
 			return false, fmt.Errorf("writing dry-run upgrade summary: %w", err)
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Asset: %s (%s)\n", chosen.Name, formatBytes(chosen.Size)); err != nil {
@@ -270,7 +275,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	destPath := filepath.Join(workDir, chosen.Name)
 	slog.Info("downloading asset", "url", chosen.DownloadURL, "dest", destPath)
-	n, err := client.DownloadAsset(chosen.DownloadURL, destPath)
+	n, err := client.DownloadAsset(chosen, destPath)
 	if err != nil {
 		return false, fmt.Errorf("download asset: %w", err)
 	}
@@ -333,7 +338,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		return false, fmt.Errorf("saving history: %w", err)
 	}
 
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s to %s\n", githubRepoReleasesURL(owner, repo), release.TagName); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s to %s\n", githubRepoReleasesURL(rec.Host, owner, repo), release.TagName); err != nil {
 		return false, fmt.Errorf("writing upgrade completion: %w", err)
 	}
 	return true, nil

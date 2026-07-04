@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,14 +24,63 @@ const (
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
+	webHost    string
+	token      string
 }
 
-// NewClient creates a new GitHub API client with sensible defaults.
+// NewClient creates a new GitHub API client targeting github.com.
 func NewClient() *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: defaultTimeout},
 		baseURL:    defaultBaseURL,
+		webHost:    DefaultHost,
 	}
+}
+
+// NewClientForHost creates a client targeting the given GitHub host, which
+// must already be normalized by NormalizeHost: either "github.com" or a
+// *.ghe.com host (GitHub Enterprise Cloud with data residency). For
+// *.ghe.com hosts, the REST API is served from api.<host> rather than
+// api.github.com.
+func NewClientForHost(host string) *Client {
+	if host == "" || host == DefaultHost {
+		return NewClient()
+	}
+	return &Client{
+		httpClient: &http.Client{Timeout: defaultTimeout},
+		baseURL:    "https://api." + host,
+		webHost:    host,
+	}
+}
+
+// WithToken sets the token used to authenticate API requests and returns the
+// client for chaining. An empty token leaves the client anonymous. The token
+// is also used for asset downloads from the client's configured GitHub
+// host, which is required for private-repo downloads; Go's http.Client
+// strips the Authorization header on the redirect to the actual storage
+// host.
+func (c *Client) WithToken(token string) *Client {
+	c.token = token
+	return c
+}
+
+// isTrustedDownloadHost reports whether rawURL points at this client's
+// configured GitHub web or API host, the only hosts release asset downloads
+// may carry the token to.
+func (c *Client) isTrustedDownloadHost(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	webHost := c.webHost
+	if webHost == "" {
+		webHost = DefaultHost
+	}
+	if webHost == DefaultHost {
+		return host == DefaultHost || host == "www."+DefaultHost || host == "api."+DefaultHost
+	}
+	return host == webHost || host == "api."+webHost
 }
 
 // NewClientWithHTTP creates a client with a custom http.Client (useful for testing).
@@ -67,6 +117,9 @@ func (c *Client) doRequest(path string) (body []byte, err error) {
 
 	req.Header.Set("Accept", acceptHeader)
 	req.Header.Set("X-GitHub-Api-Version", apiVersionHeader)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -182,14 +235,27 @@ func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) 
 	return releases, nil
 }
 
-// DownloadAsset downloads a release asset to destPath, writing directly to disk.
-// It follows GitHub's redirect to the actual file URL.
-func (c *Client) DownloadAsset(downloadURL, destPath string) (n int64, err error) {
+// DownloadAsset downloads a release asset to destPath, writing directly to
+// disk, following GitHub's redirect to the actual file URL. Anonymous
+// downloads use the asset's browser download URL. When a token is set, the
+// asset's API URL is preferred with the token attached, since private-repo
+// assets are only served through the API; GitHub redirects to a signed
+// storage URL and Go's http.Client strips the Authorization header on that
+// cross-host redirect.
+func (c *Client) DownloadAsset(asset Asset, destPath string) (n int64, err error) {
+	downloadURL := asset.DownloadURL
+	if c.token != "" && asset.APIURL != "" && c.isTrustedDownloadHost(asset.APIURL) {
+		downloadURL = asset.APIURL
+	}
+
 	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("creating download request: %w", err)
 	}
 	req.Header.Set("Accept", "application/octet-stream")
+	if c.token != "" && c.isTrustedDownloadHost(downloadURL) {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

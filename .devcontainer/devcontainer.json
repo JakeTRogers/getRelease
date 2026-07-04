@@ -7,6 +7,11 @@
     "securityOpt": [
         "no-new-privileges=false"
     ],
+    "initializeCommand": "mkdir -p \"${HOME}/.agents/skills\"",
+    "mounts": [
+        "source=${localEnv:HOME}/.agents/skills,target=/home/vscode/.agents/skills,type=bind"
+    ],
+    "postCreateCommand": "bash -c 'mkdir -p ~/.agents/skills ~/.claude; [ -L ~/.claude/skills ] || rm -rf ~/.claude/skills; ln -sfn ~/.agents/skills ~/.claude/skills'",
     "customizations": {
         "vscode": {
             "settings": {

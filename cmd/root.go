@@ -85,14 +85,17 @@ func init() {
 	rootCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	rootCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
 	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
+	rootCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	rootCmd.Flags().StringP("tag", "t", "", "release tag/version (default: latest)")
 	rootCmd.Flags().BoolP("download-only", "d", false, "download and extract without installing")
 	rootCmd.Flags().String("install-as", "", "override installed filename when exactly one binary is installed")
 	rootCmd.Flags().String("format", "text", "output format: text, json")
 
-	// Mutual exclusivity: --url vs --owner/--repo
+	// Mutual exclusivity: --url vs --owner/--repo/--host (a URL carries its
+	// own host)
 	rootCmd.MarkFlagsMutuallyExclusive("url", "owner")
 	rootCmd.MarkFlagsMutuallyExclusive("url", "repo")
+	rootCmd.MarkFlagsMutuallyExclusive("url", "host")
 
 	// Registered explicitly (Cobra's Execute() would add this too, but only once
 	// the command is run) so TestRootHasCompletionCommand can assert its
@@ -127,37 +130,76 @@ func initConfig(cmd *cobra.Command) error {
 	return nil
 }
 
-// resolveRepo determines the owner and repo from flags, returning an error if
-// the input is invalid or incomplete.
-func resolveRepo(cmd *cobra.Command) (owner, repo string, err error) {
+// resolveRepo determines the owner, repo, and GitHub host from flags,
+// returning an error if the input is invalid or incomplete. The host is
+// taken from the --url host or the --host flag; with --owner/--repo alone it
+// comes from the repository's install history record, and defaults to
+// github.com for repositories not installed before.
+func resolveRepo(cmd *cobra.Command) (owner, repo, host string, err error) {
 	urlFlag, _ := cmd.Flags().GetString("url")
 	ownerFlag, _ := cmd.Flags().GetString("owner")
 	repoFlag, _ := cmd.Flags().GetString("repo")
+	hostFlag, _ := cmd.Flags().GetString("host")
 
 	if urlFlag != "" {
-		owner, repo, err = github.ParseRepoURL(urlFlag)
+		owner, repo, host, err = github.ParseRepoURL(urlFlag)
 		if err != nil {
-			return "", "", fmt.Errorf("parsing URL: %w", err)
+			return "", "", "", fmt.Errorf("parsing URL: %w", err)
 		}
-		return owner, repo, nil
+		return owner, repo, host, nil
 	}
 
 	if ownerFlag == "" && repoFlag == "" {
-		return "", "", errors.New("specify a repository with --owner and --repo, or use --url")
+		return "", "", "", errors.New("specify a repository with --owner and --repo, or use --url")
 	}
 	if ownerFlag == "" {
-		return "", "", errors.New("--owner is required when using --repo")
+		return "", "", "", errors.New("--owner is required when using --repo")
 	}
 	if repoFlag == "" {
-		return "", "", errors.New("--repo is required when using --owner")
+		return "", "", "", errors.New("--repo is required when using --owner")
 	}
 
-	return ownerFlag, repoFlag, nil
+	if hostFlag != "" {
+		host, err = github.NormalizeHost(hostFlag)
+		if err != nil {
+			return "", "", "", err
+		}
+		return ownerFlag, repoFlag, host, nil
+	}
+
+	return ownerFlag, repoFlag, historyHostFor(ownerFlag, repoFlag), nil
+}
+
+// historyHostFor returns the GitHub host recorded for owner/repo in install
+// history, defaulting to github.com when the repository has no record. This
+// is the only automatic host source: a package installed from a *.ghe.com
+// host keeps targeting that host without needing --host again.
+func historyHostFor(owner, repo string) string {
+	histPath, err := config.HistoryFilePath()
+	if err != nil {
+		return github.DefaultHost
+	}
+	store := history.NewStore(histPath)
+	if err := store.Load(); err != nil {
+		slog.Debug("skipping history host lookup", "err", err)
+		return github.DefaultHost
+	}
+	rec := store.FindByRepo(owner, repo)
+	if rec == nil || rec.Host == "" {
+		return github.DefaultHost
+	}
+	host, err := github.NormalizeHost(rec.Host)
+	if err != nil {
+		slog.Warn("ignoring invalid host in history record", "owner", owner, "repo", repo, "host", rec.Host, "err", err)
+		return github.DefaultHost
+	}
+	slog.Debug("using GitHub host from install history", "owner", owner, "repo", repo, "host", host)
+	return host
 }
 
 // runRoot implements the full download/extract/select/install pipeline.
 func runRoot(cmd *cobra.Command, _ []string) error {
-	owner, repo, err := resolveRepo(cmd)
+	owner, repo, host, err := resolveRepo(cmd)
 	if err != nil {
 		return err
 	}
@@ -176,7 +218,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		RequestedTag: tag,
 	}
 
-	slog.Info("resolved repository", "owner", owner, "repo", repo, "tag", tag)
+	slog.Info("resolved repository", "owner", owner, "repo", repo, "host", host, "tag", tag)
 
 	// Load configuration
 	cfg, err := config.Load(cfgViper)
@@ -198,7 +240,10 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Create GitHub client and fetch release
-	client := newGitHubClient()
+	client, err := newGitHubClient(host)
+	if err != nil {
+		return err
+	}
 	var rel *github.Release
 	if tag != "" {
 		rel, err = client.GetReleaseByTag(owner, repo, tag)
@@ -278,7 +323,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("writing download message: %w", err)
 		}
 	}
-	size, err := client.DownloadAsset(selectedAsset.DownloadURL, assetPath)
+	size, err := client.DownloadAsset(selectedAsset, assetPath)
 	if err != nil {
 		return fmt.Errorf("downloading asset: %w", err)
 	}
@@ -423,6 +468,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		OS:    osName,
 		Arch:  arch,
 	}
+	if host != github.DefaultHost {
+		rec.Host = host
+	}
 	if existing != nil {
 		rec.PinLevel = existing.PinLevel
 	}
@@ -446,7 +494,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		if _, err := fmt.Fprintf(out, "\nHistory updated: %s/%s %s -> %s\n", owner, repo, rel.TagName, strings.Join(installedPaths, ", ")); err != nil {
 			return fmt.Errorf("writing history update message: %w", err)
 		}
-		if _, err := fmt.Fprintf(out, "Review the release notes: %s\n", githubReleasePageURL(owner, repo, rel)); err != nil {
+		if _, err := fmt.Fprintf(out, "Review the release notes: %s\n", githubReleasePageURL(host, owner, repo, rel)); err != nil {
 			return fmt.Errorf("writing release notes message: %w", err)
 		}
 		return nil

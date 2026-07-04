@@ -24,9 +24,13 @@ const (
 
 // Record represents a single install/upgrade entry in history.
 type Record struct {
-	ID          string    `json:"id"`
-	Owner       string    `json:"owner"`
-	Repo        string    `json:"repo"`
+	ID    string `json:"id"`
+	Owner string `json:"owner"`
+	Repo  string `json:"repo"`
+	// Host is the GitHub host the package was installed from; empty means
+	// github.com. Upgrades and reinstalls of this owner/repo target this
+	// host automatically.
+	Host        string    `json:"host,omitempty"`
 	Tag         string    `json:"tag"`
 	PinLevel    PinLevel  `json:"pinLevel,omitempty"`
 	Asset       AssetInfo `json:"asset"`

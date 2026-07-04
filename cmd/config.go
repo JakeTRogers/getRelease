@@ -37,6 +37,7 @@ var configKeys = []struct {
 	{value: "installDir", description: "directory for installed binaries"},
 	{value: "installCommand", description: "command template for installing binaries"},
 	{value: "autoExtract", description: "automatically extract downloaded archives"},
+	{value: "token", description: "GitHub API token (prefer GETRELEASE_TOKEN/GH_TOKEN/GITHUB_TOKEN env vars over storing here)"},
 	{value: "assetPreferences.os", description: "override detected OS for asset matching"},
 	{value: "assetPreferences.arch", description: "override detected architecture for asset matching"},
 	{value: "assetPreferences.formats", description: "preferred archive formats in priority order"},
@@ -50,6 +51,9 @@ var configShowCmd = &cobra.Command{
 		format, _ := cmd.Flags().GetString("format")
 
 		settings := cfgViper.AllSettings()
+		if tok, ok := settings["token"].(string); ok && tok != "" {
+			settings["token"] = "<redacted>"
+		}
 
 		switch strings.ToLower(format) {
 		case "json":
@@ -84,6 +88,11 @@ var configGetCmd = &cobra.Command{
 			return fmt.Errorf("unknown config key: %s", key)
 		}
 		val := cfgViper.Get(key)
+		if key == "token" {
+			if tok, _ := val.(string); tok != "" {
+				val = "<redacted>"
+			}
+		}
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), val); err != nil {
 			return fmt.Errorf("writing config value: %w", err)
 		}
@@ -109,7 +118,11 @@ var configSetCmd = &cobra.Command{
 			return fmt.Errorf("saving config: %w", err)
 		}
 
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Set %s = %s\n", key, value); err != nil {
+		displayValue := value
+		if key == "token" && value != "" {
+			displayValue = "<redacted>"
+		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Set %s = %s\n", key, displayValue); err != nil {
 			return fmt.Errorf("writing config set confirmation: %w", err)
 		}
 		return nil

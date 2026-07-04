@@ -105,8 +105,8 @@ func (s *Store) Save() error {
 }
 
 // Add inserts or updates a record in the store. If a record with the same
-// owner+repo exists it will be updated (tag, pin level, asset, binaries,
-// updatedAt). New records will receive an ID if empty and InstalledAt will be
+// owner+repo exists it will be updated (host, tag, pin level, asset,
+// binaries, updatedAt). New records will receive an ID if empty and InstalledAt will be
 // set if zero.
 func (s *Store) Add(r Record) error {
 	if !isValidPinLevel(r.PinLevel) {
@@ -125,6 +125,7 @@ func (s *Store) Add(r Record) error {
 	for i := range s.records {
 		if s.records[i].Owner == r.Owner && s.records[i].Repo == r.Repo {
 			// update existing
+			s.records[i].Host = r.Host
 			s.records[i].Tag = r.Tag
 			s.records[i].PinLevel = r.PinLevel
 			s.records[i].Asset = r.Asset

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -103,5 +105,41 @@ func TestParseStringSliceValue(t *testing.T) {
 	want := []string{"zip", "tar.gz"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseStringSliceValue() = %v, want %v", got, want)
+	}
+}
+
+func TestConfigGetRedactsToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+	cfgViper.Set("token", "super-secret")
+
+	var out bytes.Buffer
+	configGetCmd.SetOut(&out)
+	if err := configGetCmd.RunE(configGetCmd, []string{"token"}); err != nil {
+		t.Fatalf("configGetCmd.RunE() error: %v", err)
+	}
+
+	got := strings.TrimSpace(out.String())
+	if got != "<redacted>" {
+		t.Errorf("config get token = %q, want <redacted>", got)
+	}
+}
+
+func TestConfigSetRedactsTokenInConfirmation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+
+	var out bytes.Buffer
+	configSetCmd.SetOut(&out)
+	if err := configSetCmd.RunE(configSetCmd, []string{"token", "super-secret"}); err != nil {
+		t.Fatalf("configSetCmd.RunE() error: %v", err)
+	}
+
+	got := strings.TrimSpace(out.String())
+	if got != "Set token = <redacted>" {
+		t.Errorf("config set token confirmation = %q, want %q", got, "Set token = <redacted>")
+	}
+	if cfgViper.GetString("token") != "super-secret" {
+		t.Errorf("cfgViper token = %q, want %q", cfgViper.GetString("token"), "super-secret")
 	}
 }

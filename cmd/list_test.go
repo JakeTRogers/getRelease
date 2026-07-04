@@ -127,7 +127,7 @@ func TestListReleasesEmpty(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	if err := listReleases(cmd, client, "cli", "empty", "text"); err != nil {
+	if err := listReleases(cmd, client, "github.com", "cli", "empty", "text"); err != nil {
 		t.Fatalf("listReleases() error: %v", err)
 	}
 	if !strings.Contains(out.String(), "No releases found for cli/empty") {
@@ -155,7 +155,7 @@ func TestListAssetsText(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	if err := listAssets(cmd, client, "cli", "tool", "v1.0.0", "text"); err != nil {
+	if err := listAssets(cmd, client, "github.com", "cli", "tool", "v1.0.0", "text"); err != nil {
 		t.Fatalf("listAssets() error: %v", err)
 	}
 	text := out.String()
@@ -180,7 +180,7 @@ func TestListAssetsEmpty(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	if err := listAssets(cmd, client, "cli", "tool", "v1.0.0", "text"); err != nil {
+	if err := listAssets(cmd, client, "github.com", "cli", "tool", "v1.0.0", "text"); err != nil {
 		t.Fatalf("listAssets() error: %v", err)
 	}
 	if !strings.Contains(out.String(), "Release v1.0.0 has no downloadable assets") {
