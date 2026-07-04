@@ -94,8 +94,13 @@ func init() {
 	rootCmd.MarkFlagsMutuallyExclusive("url", "owner")
 	rootCmd.MarkFlagsMutuallyExclusive("url", "repo")
 
+	// Registered explicitly (Cobra's Execute() would add this too, but only once
+	// the command is run) so TestRootHasCompletionCommand can assert its
+	// presence without calling Execute(); InitDefaultCompletionCmd is a no-op
+	// if a completion command is already registered, so this is safe.
 	rootCmd.InitDefaultCompletionCmd()
 	registerOwnerRepoHistoryCompletions(rootCmd, false)
+	mustRegisterFlagCompletion(rootCmd, "format", completeOutputFormatValues)
 }
 
 // initConfig sets up Viper and configures the slog logger.
