@@ -1,3 +1,10 @@
+## v1.3.0 (2026-07-04)
+
+### Feat
+
+- add authenticated GitHub API support with token resolution chain
+- **build**: enable arm64 support for gorelease
+
 ## v1.2.2 (2026-07-03)
 
 ### Fix
