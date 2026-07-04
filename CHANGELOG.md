@@ -1,3 +1,9 @@
+## v1.2.2 (2026-07-03)
+
+### Fix
+
+- **completion**: add missing shell completion for format, config keys, and history remove
+
 ## v1.2.1 (2026-06-21)
 
 ### Fix
