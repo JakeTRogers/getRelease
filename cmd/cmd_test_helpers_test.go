@@ -86,10 +86,19 @@ func setTestConfig(downloadDir, installDir string) {
 	cfgViper.Set("installDir", installDir)
 	cfgViper.Set("installCommand", "")
 	cfgViper.Set("autoExtract", false)
+	// Fixture releases have zero PublishedAt, which the cooldown treats as
+	// ineligible; cooldown tests opt back in explicitly.
+	cfgViper.Set("cooldown", 0)
 	cfgViper.Set("assetPreferences.os", "linux")
 	cfgViper.Set("assetPreferences.arch", "amd64")
 	cfgViper.Set("assetPreferences.formats", []string{"tar.gz", "zip"})
 	cfgViper.Set("assetPreferences.excludePatterns", []string{})
+}
+
+// disabledCooldown returns cooldown settings with the cooldown off, for
+// tests exercising behavior unrelated to the cooldown feature.
+func disabledCooldown() cooldownSettings {
+	return cooldownSettings{source: "config", now: time.Now}
 }
 
 func addRootTestFlags(cmd *cobra.Command) {
@@ -101,6 +110,7 @@ func addRootTestFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("download-only", false, "")
 	cmd.Flags().String("install-as", "", "")
 	cmd.Flags().String("format", "text", "")
+	cmd.Flags().Int("cooldown", 0, "")
 }
 
 func addListTestFlags(cmd *cobra.Command) {
@@ -118,6 +128,7 @@ func addUpgradeTestFlags(cmd *cobra.Command) {
 	cmd.Flags().String("owner", "", "")
 	cmd.Flags().String("repo", "", "")
 	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().Int("cooldown", 0, "")
 }
 
 func addPinTestFlags(cmd *cobra.Command) {

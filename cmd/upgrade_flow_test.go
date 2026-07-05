@@ -209,7 +209,7 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 
-	err := runUpgradeAll(cmd, store, cfg, true)
+	err := runUpgradeAll(cmd, store, cfg, true, disabledCooldown())
 	if err == nil || !strings.Contains(err.Error(), "completed with failures") {
 		t.Fatalf("runUpgradeAll() error = %v, want failure summary", err)
 	}
@@ -286,7 +286,7 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	upgraded, err := upgradeRecord(cmd, store, cfg, &rec, false)
+	upgraded, err := upgradeRecord(cmd, store, cfg, &rec, false, disabledCooldown())
 	if err != nil {
 		t.Fatalf("upgradeRecord() error: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestUpgradeRecordAlreadyLatestAndFallbackAssetSelection(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	current := newHistoryRecord("rec1", "cli", "current", "v1.0.0", "current_linux_amd64", "current", filepath.Join(t.TempDir(), "bin", "current"))
-	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &current, true)
+	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &current, true, disabledCooldown())
 	if err != nil {
 		t.Fatalf("upgradeRecord() current error: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestUpgradeRecordAlreadyLatestAndFallbackAssetSelection(t *testing.T) {
 
 	out.Reset()
 	fallback := newHistoryRecord("rec2", "cli", "fallback", "v1.0.0", "legacy-name", "fallback", filepath.Join(t.TempDir(), "bin", "fallback"))
-	upgraded, err = upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history-2.json")), cfg, &fallback, true)
+	upgraded, err = upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history-2.json")), cfg, &fallback, true, disabledCooldown())
 	if err != nil {
 		t.Fatalf("upgradeRecord() fallback error: %v", err)
 	}

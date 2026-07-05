@@ -38,6 +38,8 @@ var configKeys = []struct {
 	{value: "installCommand", description: "command template for installing binaries"},
 	{value: "autoExtract", description: "automatically extract downloaded archives"},
 	{value: "token", description: "GitHub API token (prefer GETRELEASE_TOKEN/GH_TOKEN/GITHUB_TOKEN env vars over storing here)"},
+	{value: "cooldown", description: "minimum release age in days before install (0 disables)"},
+	{value: "trustedOwners", description: "GitHub owners exempt from cooldown (case-insensitive)"},
 	{value: "assetPreferences.os", description: "override detected OS for asset matching"},
 	{value: "assetPreferences.arch", description: "override detected architecture for asset matching"},
 	{value: "assetPreferences.formats", description: "preferred archive formats in priority order"},
@@ -145,6 +147,15 @@ func parseConfigValue(key, raw string) (any, error) {
 		return parsed, nil
 	case string:
 		return raw, nil
+	case int:
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s as int: %w", key, err)
+		}
+		if parsed < 0 {
+			return nil, fmt.Errorf("%s must be >= 0", key)
+		}
+		return parsed, nil
 	case []string:
 		return parseStringSliceValue(raw)
 	default:

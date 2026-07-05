@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestClient_ListReleases(t *testing.T) {
@@ -47,11 +48,20 @@ func TestClient_ListReleases(t *testing.T) {
 func TestClient_GetLatestRelease(t *testing.T) {
 	t.Parallel()
 
-	release := Release{
-		TagName: "v3.0.0",
-		Name:    "Latest",
-		Assets:  []Asset{{Name: "app_linux_amd64.tar.gz", Size: 1024}},
-	}
+	// Raw JSON with GitHub's field names, so the struct tags are what's
+	// actually under test (a struct fixture would round-trip even with
+	// wrong tags).
+	body := `{
+		"tag_name": "v3.0.0",
+		"name": "Latest",
+		"published_at": "2026-05-01T10:00:00Z",
+		"assets": [{
+			"name": "app_linux_amd64.tar.gz",
+			"size": 1024,
+			"created_at": "2026-05-01T10:05:00Z",
+			"updated_at": "2026-06-15T08:30:00Z"
+		}]
+	}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/owner/repo/releases/latest" {
@@ -59,8 +69,8 @@ func TestClient_GetLatestRelease(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(release); err != nil {
-			t.Errorf("encode latest release: %v", err)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write latest release: %v", err)
 		}
 	}))
 	defer srv.Close()
@@ -74,7 +84,17 @@ func TestClient_GetLatestRelease(t *testing.T) {
 		t.Errorf("GetLatestRelease().TagName = %q, want %q", got.TagName, "v3.0.0")
 	}
 	if len(got.Assets) != 1 {
-		t.Errorf("GetLatestRelease() returned %d assets, want 1", len(got.Assets))
+		t.Fatalf("GetLatestRelease() returned %d assets, want 1", len(got.Assets))
+	}
+	if got.PublishedAt.IsZero() {
+		t.Error("GetLatestRelease().PublishedAt is zero, want decoded timestamp")
+	}
+	asset := got.Assets[0]
+	if want := time.Date(2026, time.May, 1, 10, 5, 0, 0, time.UTC); !asset.CreatedAt.Equal(want) {
+		t.Errorf("asset CreatedAt = %v, want %v", asset.CreatedAt, want)
+	}
+	if want := time.Date(2026, time.June, 15, 8, 30, 0, 0, time.UTC); !asset.UpdatedAt.Equal(want) {
+		t.Errorf("asset UpdatedAt = %v, want %v", asset.UpdatedAt, want)
 	}
 }
 

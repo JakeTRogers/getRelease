@@ -24,6 +24,12 @@ func TestSetDefaults(t *testing.T) {
 	if len(formats) != 2 || formats[0] != "tar.gz" || formats[1] != "zip" {
 		t.Errorf("assetPreferences.formats default = %v, want [tar.gz zip]", formats)
 	}
+	if v.GetInt("cooldown") != 10 {
+		t.Errorf("cooldown default = %d, want 10", v.GetInt("cooldown"))
+	}
+	if owners := v.GetStringSlice("trustedOwners"); len(owners) != 0 {
+		t.Errorf("trustedOwners default = %v, want empty", owners)
+	}
 }
 
 func TestInit_NoConfigFile(t *testing.T) {

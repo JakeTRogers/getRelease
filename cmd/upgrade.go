@@ -40,6 +40,7 @@ func init() {
 	upgradeCmd.Flags().StringP("repo", "r", "", "GitHub repository (skip history lookup)")
 	upgradeCmd.Flags().Bool("all", false, "upgrade all installed packages still present on disk")
 	upgradeCmd.Flags().Bool("dry-run", false, "show what would be upgraded")
+	upgradeCmd.Flags().Int("cooldown", 0, "minimum release age in days (overrides config; 0 disables)")
 	upgradeCmd.ValidArgsFunction = completeInstalledUpgradeTargets
 	registerOwnerRepoHistoryCompletions(upgradeCmd, true)
 	rootCmd.AddCommand(upgradeCmd)
@@ -84,8 +85,10 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading history: %w", err)
 	}
 
+	cds := resolveCooldownSettings(cmd, cfg)
+
 	if upgradeAll {
-		return runUpgradeAll(cmd, store, cfg, dryRun)
+		return runUpgradeAll(cmd, store, cfg, dryRun, cds)
 	}
 
 	rec, err := resolveUpgradeRecord(store, args[0], ownerFlag, repoFlag)
@@ -93,11 +96,11 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	_, err = upgradeRecord(cmd, store, cfg, rec, dryRun)
+	_, err = upgradeRecord(cmd, store, cfg, rec, dryRun, cds)
 	return err
 }
 
-func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConfig, dryRun bool) error {
+func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConfig, dryRun bool, cds cooldownSettings) error {
 	records := presentHistoryRecords(store.Records())
 	skippedMissing := len(store.Records()) - len(records)
 	if len(records) == 0 {
@@ -118,7 +121,7 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 			return fmt.Errorf("writing upgrade header for %s/%s: %w", rec.Owner, rec.Repo, err)
 		}
 
-		upgraded, err := upgradeRecord(cmd, store, cfg, &rec, dryRun)
+		upgraded, err := upgradeRecord(cmd, store, cfg, &rec, dryRun, cds)
 		if err != nil {
 			failed++
 			failures = append(failures, fmt.Sprintf("%s/%s: %v", rec.Owner, rec.Repo, err))
@@ -196,13 +199,14 @@ func resolveUpgradeRecord(store *history.Store, target, ownerFlag, repoFlag stri
 	return &r, nil
 }
 
-func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConfig, rec *history.Record, dryRun bool) (bool, error) {
+func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConfig, rec *history.Record, dryRun bool, cds cooldownSettings) (bool, error) {
 	if rec == nil {
 		return false, errors.New("internal: no history record resolved")
 	}
 
 	owner := rec.Owner
 	repo := rec.Repo
+	policy := cds.policyFor(owner)
 
 	// Target the host the package was originally installed from (empty
 	// means github.com).
@@ -210,7 +214,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	if err != nil {
 		return false, err
 	}
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, policy)
 	if err != nil {
 		return false, err
 	}
@@ -250,6 +254,10 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 			}
 			chosen = candidates[idx]
 		}
+	}
+
+	if err := policy.checkAsset(release, chosen); err != nil {
+		return false, err
 	}
 
 	// Dry-run: show what would happen
@@ -344,7 +352,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	return true, nil
 }
 
-func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *history.Record) (*github.Release, bool, error) {
+func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *history.Record, policy cooldownPolicy) (*github.Release, bool, error) {
 	owner := rec.Owner
 	repo := rec.Repo
 
@@ -360,6 +368,27 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 				return nil, false, fmt.Errorf("writing current-version message: %w", err)
 			}
 			return nil, true, nil
+		}
+
+		if policy.enabled() && !policy.releaseEligible(release) {
+			releases, err := client.ListReleases(owner, repo, 100)
+			if err != nil {
+				return nil, false, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+			}
+			fallback, err := findCooldownFallback(releases, owner, repo, policy)
+			if err != nil {
+				return nil, false, err
+			}
+			if !upgradeFallbackIsNewer(releases, fallback, rec.Tag) {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "latest %s is in the %d-day cooldown; already at newest eligible version (%s)\n", release.TagName, policy.days, rec.Tag); err != nil {
+					return nil, false, fmt.Errorf("writing cooldown unchanged message: %w", err)
+				}
+				return nil, true, nil
+			}
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", release.TagName, policy.ageDays(release.PublishedAt), policy.days, fallback.TagName); err != nil {
+				return nil, false, fmt.Errorf("writing cooldown fallback message: %w", err)
+			}
+			return fallback, false, nil
 		}
 
 		return release, false, nil
@@ -391,9 +420,15 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 
 		bestIndex := -1
 		var bestVersion semver.Version
+		blockedByCooldown := 0
 		for i := range releases {
 			release := releases[i]
 			if release.TagName == rec.Tag || release.Draft || release.Prerelease {
+				continue
+			}
+			if policy.enabled() && !policy.releaseEligible(&release) {
+				slog.Debug("skipping release inside cooldown", "owner", owner, "repo", repo, "tag", release.TagName, "cooldownDays", policy.days)
+				blockedByCooldown++
 				continue
 			}
 
@@ -424,7 +459,11 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 		}
 
 		if bestIndex == -1 {
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "no newer eligible release found"); err != nil {
+			msg := "no newer eligible release found"
+			if blockedByCooldown > 0 {
+				msg = fmt.Sprintf("no newer eligible release found (%d blocked by %d-day cooldown)", blockedByCooldown, policy.days)
+			}
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), msg); err != nil {
 				return nil, false, fmt.Errorf("writing unchanged pin message: %w", err)
 			}
 			return nil, true, nil
@@ -435,6 +474,33 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 	default:
 		return nil, false, fmt.Errorf("unsupported pin level %q for %s/%s", rec.PinLevel, owner, repo)
 	}
+}
+
+// upgradeFallbackIsNewer reports whether a cooldown fallback release is an
+// actual upgrade over the currently installed tag. Semver tags are compared
+// numerically; otherwise the release list's publish order (most-recent-first)
+// decides, so a non-semver fallback never downgrades an installed release
+// that was published after it.
+func upgradeFallbackIsNewer(releases []github.Release, fallback *github.Release, currentTag string) bool {
+	if fallback.TagName == currentTag {
+		return false
+	}
+	fallbackVersion, fallbackErr := semver.Parse(fallback.TagName)
+	currentVersion, currentErr := semver.Parse(currentTag)
+	if fallbackErr == nil && currentErr == nil {
+		return fallbackVersion.Compare(currentVersion) > 0
+	}
+	for i := range releases {
+		switch releases[i].TagName {
+		case currentTag:
+			return false
+		case fallback.TagName:
+			return true
+		}
+	}
+	// The current tag is not among the recent releases; assume the fallback
+	// supersedes it.
+	return true
 }
 
 func buildArchiveUpgradeMappings(rec history.Record, extractedDir string, found []string) ([]upgradeMapping, []string) {

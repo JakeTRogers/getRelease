@@ -26,19 +26,28 @@ import (
 var cfgViper = viper.New()
 
 type rootCommandResult struct {
-	Owner        string       `json:"owner"`
-	Repo         string       `json:"repo"`
-	RequestedTag string       `json:"requestedTag,omitempty"`
-	ReleaseTag   string       `json:"releaseTag"`
-	ReleaseName  string       `json:"releaseName,omitempty"`
-	Asset        github.Asset `json:"asset"`
-	DownloadPath string       `json:"downloadPath"`
-	DownloadSize int64        `json:"downloadSize"`
-	Extracted    bool         `json:"extracted"`
-	DownloadOnly bool         `json:"downloadOnly"`
-	Binaries     []string     `json:"binaries,omitempty"`
-	Installed    []string     `json:"installed,omitempty"`
-	HistoryPath  string       `json:"historyPath,omitempty"`
+	Owner        string          `json:"owner"`
+	Repo         string          `json:"repo"`
+	RequestedTag string          `json:"requestedTag,omitempty"`
+	ReleaseTag   string          `json:"releaseTag"`
+	ReleaseName  string          `json:"releaseName,omitempty"`
+	Asset        github.Asset    `json:"asset"`
+	DownloadPath string          `json:"downloadPath"`
+	DownloadSize int64           `json:"downloadSize"`
+	Extracted    bool            `json:"extracted"`
+	DownloadOnly bool            `json:"downloadOnly"`
+	Binaries     []string        `json:"binaries,omitempty"`
+	Installed    []string        `json:"installed,omitempty"`
+	HistoryPath  string          `json:"historyPath,omitempty"`
+	Cooldown     *cooldownReport `json:"cooldown,omitempty"`
+}
+
+// cooldownReport records that the latest release was skipped because it was
+// inside the cooldown window and a fallback release was installed instead.
+type cooldownReport struct {
+	Days           int    `json:"days"`
+	SkippedTag     string `json:"skippedTag"`
+	SkippedAgeDays int    `json:"skippedAgeDays"`
 }
 
 // rootCmd represents the base command when called without any subcommands.
@@ -90,6 +99,7 @@ func init() {
 	rootCmd.Flags().BoolP("download-only", "d", false, "download and extract without installing")
 	rootCmd.Flags().String("install-as", "", "override installed filename when exactly one binary is installed")
 	rootCmd.Flags().String("format", "text", "output format: text, json")
+	rootCmd.Flags().Int("cooldown", 0, "minimum release age in days (overrides config; 0 disables)")
 
 	// Mutual exclusivity: --url vs --owner/--repo/--host (a URL carries its
 	// own host)
@@ -244,14 +254,42 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	policy := resolveCooldownSettings(cmd, cfg).policyFor(owner)
 	var rel *github.Release
 	if tag != "" {
 		rel, err = client.GetReleaseByTag(owner, repo, tag)
+		if err != nil {
+			return fmt.Errorf("fetching release: %w", err)
+		}
+		if err := policy.checkRelease(rel); err != nil {
+			return err
+		}
 	} else {
 		rel, err = client.GetLatestRelease(owner, repo)
-	}
-	if err != nil {
-		return fmt.Errorf("fetching release: %w", err)
+		if err != nil {
+			return fmt.Errorf("fetching release: %w", err)
+		}
+		if policy.enabled() && !policy.releaseEligible(rel) {
+			releases, err := client.ListReleases(owner, repo, 100)
+			if err != nil {
+				return fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+			}
+			fallback, err := findCooldownFallback(releases, owner, repo, policy)
+			if err != nil {
+				return err
+			}
+			if textOutput {
+				if _, err := fmt.Fprintf(out, "release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", rel.TagName, policy.ageDays(rel.PublishedAt), policy.days, fallback.TagName); err != nil {
+					return fmt.Errorf("writing cooldown fallback message: %w", err)
+				}
+			}
+			result.Cooldown = &cooldownReport{
+				Days:           policy.days,
+				SkippedTag:     rel.TagName,
+				SkippedAgeDays: policy.ageDays(rel.PublishedAt),
+			}
+			rel = fallback
+		}
 	}
 	result.ReleaseTag = rel.TagName
 	result.ReleaseName = rel.DisplayName()
@@ -307,6 +345,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("selecting asset: %w", err)
 		}
 		selectedAsset = matches[idx]
+	}
+	if err := policy.checkAsset(rel, selectedAsset); err != nil {
+		return err
 	}
 	result.Asset = selectedAsset
 
