@@ -30,8 +30,10 @@ type Asset struct {
 	DownloadURL string `json:"browser_download_url"`
 	// APIURL is the REST API endpoint for the asset, used for authenticated
 	// downloads since private-repo assets are only served through the API.
-	APIURL        string `json:"url"`
-	Size          int64  `json:"size"`
-	ContentType   string `json:"content_type"`
-	DownloadCount int    `json:"download_count"`
+	APIURL        string    `json:"url"`
+	Size          int64     `json:"size"`
+	ContentType   string    `json:"content_type"`
+	DownloadCount int       `json:"download_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }

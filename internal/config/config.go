@@ -36,6 +36,13 @@ type AppConfig struct {
 	// Token authenticates GitHub API requests. Prefer the GETRELEASE_TOKEN,
 	// GH_TOKEN, or GITHUB_TOKEN environment variables over storing it here.
 	Token string `mapstructure:"token" yaml:"token"`
+	// Cooldown is the minimum age in days a release must be before it is
+	// eligible for install, guarding against freshly published malicious
+	// releases. 0 disables the cooldown.
+	Cooldown int `mapstructure:"cooldown" yaml:"cooldown"`
+	// TrustedOwners lists GitHub owners (case-insensitive) whose releases are
+	// exempt from Cooldown.
+	TrustedOwners []string `mapstructure:"trustedOwners" yaml:"trustedOwners"`
 	// AssetPreferences controls asset filtering and ranking.
 	AssetPreferences AssetPreferences `mapstructure:"assetPreferences" yaml:"assetPreferences"`
 }
@@ -52,6 +59,8 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("installCommand", "sudo install -m 755 {source} {target}")
 	v.SetDefault("autoExtract", true)
 	v.SetDefault("token", "")
+	v.SetDefault("cooldown", 10)
+	v.SetDefault("trustedOwners", []string{})
 	v.SetDefault("assetPreferences.os", "")
 	v.SetDefault("assetPreferences.arch", "")
 	v.SetDefault("assetPreferences.formats", []string{"tar.gz", "zip"})

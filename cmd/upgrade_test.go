@@ -187,7 +187,7 @@ func TestUpgradeRecordPinnedWithoutEligibleReleaseIsUnchanged(t *testing.T) {
 	var out strings.Builder
 	cmd.SetOut(&out)
 
-	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, false)
+	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, false, disabledCooldown())
 	if err != nil {
 		t.Fatalf("upgradeRecord() error: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestUpgradeRecordPinnedReleaseSelection(t *testing.T) {
 			var out strings.Builder
 			cmd.SetOut(&out)
 
-			upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, true)
+			upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, true, disabledCooldown())
 			if err != nil {
 				t.Fatalf("upgradeRecord() error: %v", err)
 			}
@@ -423,7 +423,7 @@ func TestUpgradeRecordPatchPinIsUnchanged(t *testing.T) {
 	var out strings.Builder
 	cmd.SetOut(&out)
 
-	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, false)
+	upgraded, err := upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, false, disabledCooldown())
 	if err != nil {
 		t.Fatalf("upgradeRecord() error: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestResolveUpgradeReleasePatchPinWithNonSemverTagIsUnchanged(t *testing.T) 
 	var out strings.Builder
 	cmd.SetOut(&out)
 
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(""))
 	if err != nil {
 		t.Fatalf("resolveUpgradeRelease() error: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestResolveUpgradeReleaseNonSemverPinnedVersionFailsForMinorAndMajorPins(t 
 			var out strings.Builder
 			cmd.SetOut(&out)
 
-			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec)
+			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(""))
 			if err == nil {
 				t.Fatal("resolveUpgradeRelease() error = nil, want parse error")
 			}

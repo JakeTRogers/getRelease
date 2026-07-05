@@ -1,3 +1,9 @@
+## v1.4.0 (2026-07-05)
+
+### Feat
+
+- add release cooldown to harden against supply-chain attacks
+
 ## v1.3.0 (2026-07-04)
 
 ### Feat

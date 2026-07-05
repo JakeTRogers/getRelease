@@ -66,6 +66,38 @@ func TestParseConfigValue(t *testing.T) {
 		}
 	})
 
+	t.Run("int", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := parseConfigValue("cooldown", "5")
+		if err != nil {
+			t.Fatalf("parseConfigValue() error: %v", err)
+		}
+		value, ok := got.(int)
+		if !ok {
+			t.Fatalf("parseConfigValue() returned %T, want int", got)
+		}
+		if value != 5 {
+			t.Fatalf("parseConfigValue() = %d, want 5", value)
+		}
+	})
+
+	t.Run("int rejects non-numeric", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := parseConfigValue("cooldown", "abc"); err == nil {
+			t.Fatal("parseConfigValue() error = nil, want parse error")
+		}
+	})
+
+	t.Run("int rejects negative", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := parseConfigValue("cooldown", "-1"); err == nil {
+			t.Fatal("parseConfigValue() error = nil, want negative-value error")
+		}
+	})
+
 	t.Run("unknown key", func(t *testing.T) {
 		t.Parallel()
 

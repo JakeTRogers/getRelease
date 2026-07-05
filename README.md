@@ -18,6 +18,7 @@ getRelease is a Go CLI for downloading GitHub release assets, extracting archive
 - Upgrade one installed package or every installed package still present on disk.
 - Manage config and history from built-in `config` and `history` subcommands.
 - Emit machine-readable JSON from the main install flow and list/history/config commands.
+- Enforce a release cooldown by default to harden against supply-chain attacks, with per-run and per-owner overrides.
 
 ## Installation
 
@@ -139,6 +140,34 @@ Common environment variable examples:
 ```bash
 export GETRELEASE_INSTALLDIR="$HOME/.local/bin"
 export GETRELEASE_ASSETPREFERENCES_FORMATS='["tar.gz","zip"]'
+```
+
+## Release Cooldown
+
+A freshly published release is the riskiest thing you can install: if a repository is compromised, the malicious release is usually detected and yanked within days. To give the ecosystem that window, getRelease refuses to install releases younger than the **cooldown** — 10 days by default.
+
+When the latest release is still inside the cooldown, getRelease automatically falls back to the newest release that is old enough:
+
+```text
+release v1.4.0 is 2 day(s) old, cooldown is 10 days — falling back to v1.3.2
+```
+
+An explicit `--tag` request has no fallback and fails instead, and the check also covers the selected asset's upload time — a binary re-uploaded onto an old release (a common tampering pattern) is refused even though the release itself is old enough.
+
+Change the cooldown or opt out:
+
+```bash
+# one-off: disable (or change) the cooldown for a single run
+getRelease --owner sharkdp --repo bat --cooldown 0
+
+# permanently change the window (0 disables it entirely)
+getRelease config set cooldown 5
+
+# or via environment variable
+export GETRELEASE_COOLDOWN=5
+
+# skip the cooldown for owners you trust (e.g. your own repos); case-insensitive
+getRelease config set trustedOwners 'JakeTRogers'
 ```
 
 ## Authentication
