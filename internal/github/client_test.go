@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -388,6 +389,46 @@ func TestClient_Forbidden_NonRateLimit(t *testing.T) {
 	var rl *RateLimitError
 	if isRateLimitError(err, &rl) {
 		t.Error("should not be RateLimitError when remaining > 0")
+	}
+}
+
+func TestClient_Unauthorized(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad credentials", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP(srv.Client(), srv.URL).WithToken("stale-token")
+	_, err := client.GetLatestRelease("owner", "repo")
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+	if !strings.Contains(err.Error(), "authentication failed for github.com") {
+		t.Errorf("error %q should name the host and mention authentication", err)
+	}
+	if !strings.Contains(err.Error(), "gh auth status") {
+		t.Errorf("error %q should hint at 'gh auth status'", err)
+	}
+}
+
+func TestClient_UnauthorizedAnonymous(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "requires authentication", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP(srv.Client(), srv.URL)
+	_, err := client.GetLatestRelease("owner", "repo")
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+	if !strings.Contains(err.Error(), "no token is configured") {
+		t.Errorf("error %q should indicate no token is configured", err)
+	}
+	if !strings.Contains(err.Error(), "GETRELEASE_TOKEN") {
+		t.Errorf("error %q should mention GETRELEASE_TOKEN", err)
 	}
 }
 

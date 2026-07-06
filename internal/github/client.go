@@ -141,6 +141,15 @@ func (c *Client) doRequest(path string) (body []byte, err error) {
 		return body, nil
 	case http.StatusNotFound:
 		return nil, &NotFoundError{Resource: path}
+	case http.StatusUnauthorized:
+		host := c.webHost
+		if host == "" {
+			host = DefaultHost
+		}
+		if c.token == "" {
+			return nil, fmt.Errorf("authentication failed for %s (HTTP 401): no token is configured; set GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or run 'gh auth login --hostname %s'", host, host)
+		}
+		return nil, fmt.Errorf("authentication failed for %s (HTTP 401): the token was rejected; check 'gh auth status --hostname %s' or the token configured via GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN", host, host)
 	case http.StatusForbidden:
 		remaining := resp.Header.Get("X-RateLimit-Remaining")
 		if remaining == "0" {

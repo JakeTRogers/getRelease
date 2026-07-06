@@ -1,3 +1,9 @@
+## v1.4.1 (2026-07-05)
+
+### Fix
+
+- **github**: scope gh auth tokens by host
+
 ## v1.4.0 (2026-07-05)
 
 ### Feat

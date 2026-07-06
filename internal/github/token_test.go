@@ -72,6 +72,45 @@ func TestResolveToken(t *testing.T) {
 	}
 }
 
+// TestResolveToken_HostScoped verifies that gh CLI credentials are looked up
+// for the exact target host: a machine authenticated only to a *.ghe.com host
+// must fall back to anonymous access for github.com.
+func TestResolveToken_HostScoped(t *testing.T) {
+	origGHAuthToken := ghAuthToken
+	t.Cleanup(func() { ghAuthToken = origGHAuthToken })
+
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	ghAuthToken = func(host string) string {
+		if host == "acme.ghe.com" {
+			return "ghe-only-token"
+		}
+		return ""
+	}
+
+	tests := []struct {
+		name       string
+		host       string
+		wantToken  string
+		wantSource string
+	}{
+		{"github.com gets no token from ghe.com-only auth", "github.com", "", ""},
+		{"ghe.com host gets its own token", "acme.ghe.com", "ghe-only-token", "gh CLI"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token, source := ResolveToken("", tt.host)
+			if token != tt.wantToken {
+				t.Errorf("ResolveToken() token = %q, want %q", token, tt.wantToken)
+			}
+			if source != tt.wantSource {
+				t.Errorf("ResolveToken() source = %q, want %q", source, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestGhAuthTokenArgs(t *testing.T) {
 	t.Parallel()
 
@@ -80,8 +119,8 @@ func TestGhAuthTokenArgs(t *testing.T) {
 		host string
 		want []string
 	}{
-		{"empty host omits hostname flag", "", []string{"auth", "token"}},
-		{"github.com omits hostname flag", "github.com", []string{"auth", "token"}},
+		{"empty host defaults to github.com", "", []string{"auth", "token", "--hostname", "github.com"}},
+		{"github.com passes hostname flag", "github.com", []string{"auth", "token", "--hostname", "github.com"}},
 		{"enterprise host passes hostname flag", "acme.ghe.com", []string{"auth", "token", "--hostname", "acme.ghe.com"}},
 	}
 
