@@ -10,15 +10,16 @@ import (
 
 const ghTokenTimeout = 3 * time.Second
 
-// ghAuthTokenArgs builds the `gh auth token` argument list for host,
-// passing --hostname only for non-default hosts since gh treats an omitted
-// hostname as github.com.
+// ghAuthTokenArgs builds the `gh auth token` argument list for host. The
+// --hostname flag is always passed explicitly: gh's default host is whatever
+// is in its hosts.yml, not necessarily github.com, so omitting the flag on a
+// machine authenticated only to a *.ghe.com host would return that host's
+// token and send it to api.github.com, where it is rejected.
 func ghAuthTokenArgs(host string) []string {
-	args := []string{"auth", "token"}
-	if host != "" && host != DefaultHost {
-		args = append(args, "--hostname", host)
+	if host == "" {
+		host = DefaultHost
 	}
-	return args
+	return []string{"auth", "token", "--hostname", host}
 }
 
 // ghAuthToken asks the gh CLI for its stored token for the given host
@@ -44,9 +45,10 @@ var ghAuthToken = func(host string) string {
 // ResolveToken returns the GitHub API token to use and the source it came
 // from, checking in order: the configured token (config file or
 // GETRELEASE_TOKEN), the GH_TOKEN and GITHUB_TOKEN environment variables, and
-// finally the gh CLI's stored credentials for host (which gh treats the same
-// way for github.com and *.ghe.com). It returns empty strings when no token
-// is available, in which case API requests are made anonymously.
+// finally the gh CLI's stored credentials, looked up strictly for host. A
+// machine authenticated only to a *.ghe.com host therefore yields no token
+// for github.com. It returns empty strings when no token is available, in
+// which case API requests are made anonymously.
 func ResolveToken(configToken, host string) (token, source string) {
 	if configToken != "" {
 		return configToken, "config"
