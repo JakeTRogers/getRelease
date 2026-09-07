@@ -1,3 +1,10 @@
+## v1.4.2 (2026-09-07)
+
+### Fix
+
+- **deps**: bump go.yaml.in/yaml/v3 from 3.0.4 to 3.0.5
+- **deps**: bump github.com/mattn/go-isatty from 0.0.22 to 0.0.24
+
 ## v1.4.1 (2026-07-05)
 
 ### Fix
