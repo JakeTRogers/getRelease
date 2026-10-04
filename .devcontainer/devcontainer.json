@@ -1,17 +1,14 @@
 {
     "name": "Go",
-    "image": "mcr.microsoft.com/devcontainers/go:2-1.25",
-    "runArgs": [
-        "--userns=keep-id"
-    ],
-    "securityOpt": [
-        "no-new-privileges=false"
-    ],
-    "initializeCommand": "mkdir -p \"${HOME}/.agents/skills\"",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
     "mounts": [
-        "source=${localEnv:HOME}/.agents/skills,target=/home/vscode/.agents/skills,type=bind"
+        "source=${localEnv:HOME}/.agents/skills,target=/home/vscode/.agents/skills,type=bind",
+        "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind",
+        "source=${localEnv:HOME}/.copilot,target=/home/vscode/.copilot,type=bind"
     ],
-    "postCreateCommand": "bash -c 'mkdir -p ~/.agents/skills ~/.claude; [ -L ~/.claude/skills ] || rm -rf ~/.claude/skills; ln -sfn ~/.agents/skills ~/.claude/skills'",
+    "initializeCommand": "mkdir -p \"${localEnv:HOME}/.agents/skills\" \"${localEnv:HOME}/.config/gh\" \"${localEnv:HOME}/.copilot\"",
     "customizations": {
         "vscode": {
             "settings": {
@@ -38,5 +35,14 @@
     "containerEnv": {
         "HOME": "/home/vscode"
     },
-    "remoteUser": "vscode"
+    "remoteEnv": {
+        "PATH": "/usr/local/bin:/usr/local/go/bin:/go/bin:/usr/bin:/bin:${containerEnv:PATH}"
+    },
+    "remoteUser": "vscode",
+    "runArgs": [
+        "--userns=keep-id"
+    ],
+    "securityOpt": [
+        "no-new-privileges=false"
+    ]
 }
