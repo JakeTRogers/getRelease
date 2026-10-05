@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -99,6 +100,18 @@ var configGetCmd = &cobra.Command{
 			if tok, _ := val.(string); tok != "" {
 				val = "<redacted>"
 			}
+		}
+		// Maps and lists print as YAML, like `config show`, rather than in
+		// Go's map[...] and [...] syntax.
+		if kind := reflect.ValueOf(val).Kind(); kind == reflect.Map || kind == reflect.Slice {
+			out, err := yaml.Marshal(val)
+			if err != nil {
+				return fmt.Errorf("marshaling config value to yaml: %w", err)
+			}
+			if _, err := cmd.OutOrStdout().Write(out); err != nil {
+				return fmt.Errorf("writing config value: %w", err)
+			}
+			return nil
 		}
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), val); err != nil {
 			return fmt.Errorf("writing config value: %w", err)

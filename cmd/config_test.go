@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/spf13/viper"
+	"go.yaml.in/yaml/v3"
 
 	internalconfig "github.com/JakeTRogers/getRelease/internal/config"
 	"github.com/JakeTRogers/getRelease/internal/selector"
@@ -397,5 +398,42 @@ func TestConfigResetAllConfirmation(t *testing.T) {
 				t.Errorf("config file exists = %v, want %v", statErr == nil, tt.wantFile)
 			}
 		})
+	}
+}
+
+func TestConfigGetFormatsValues(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{key: "cooldown", want: "10\n"},
+		{key: "assetPreferences.formats", want: "- tar.gz\n- zip\n"},
+		{key: "assetPreferences.excludePatterns", want: "- '*.deb'\n- '*.rpm'\n- '*.apk'\n- '*.msi'\n- '*.pkg'\n- '*.pkg.tar.zst'\n"},
+	}
+	for _, tt := range tests {
+		var out bytes.Buffer
+		configGetCmd.SetOut(&out)
+		if err := configGetCmd.RunE(configGetCmd, []string{tt.key}); err != nil {
+			t.Fatalf("config get %s error: %v", tt.key, err)
+		}
+		if out.String() != tt.want {
+			t.Errorf("config get %s = %q, want %q", tt.key, out.String(), tt.want)
+		}
+	}
+
+	var out bytes.Buffer
+	configGetCmd.SetOut(&out)
+	if err := configGetCmd.RunE(configGetCmd, []string{"assetPreferences"}); err != nil {
+		t.Fatalf("config get assetPreferences error: %v", err)
+	}
+	var parsed map[string]any
+	if err := yaml.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("config get assetPreferences output is not YAML: %v\n%s", err, out.String())
+	}
+	if _, ok := parsed["formats"]; !ok || strings.Contains(out.String(), "map[") {
+		t.Errorf("config get assetPreferences = %q, want a YAML mapping with formats", out.String())
 	}
 }
