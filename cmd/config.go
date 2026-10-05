@@ -1,14 +1,15 @@
 package cmd
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -255,13 +256,8 @@ func parseStringSliceValue(raw string) ([]string, error) {
 
 var configEditCmd = &cobra.Command{
 	Use:   "edit",
-	Short: "Open config file in $EDITOR",
+	Short: "Open config file in $VISUAL or $EDITOR",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = "vi"
-		}
-
 		cfgPath, err := internalconfig.ConfigFilePath()
 		if err != nil {
 			return fmt.Errorf("resolving config file path: %w", err)
@@ -277,17 +273,34 @@ var configEditCmd = &cobra.Command{
 			}
 		}
 
-		editorCmd := exec.Command(editor, cfgPath)
-		editorCmd.Stdin = os.Stdin
-		editorCmd.Stdout = os.Stdout
-		editorCmd.Stderr = os.Stderr
-
-		if err := editorCmd.Run(); err != nil {
-			return fmt.Errorf("running editor: %w", err)
-		}
-
-		return nil
+		return openInEditor(cfgPath)
 	},
+}
+
+// openInEditor opens path in the user's editor: $VISUAL, then $EDITOR, then
+// vi (notepad on Windows). Editor arguments use shell quoting on Unix and
+// native command-line quoting on Windows, as in EDITOR="code --wait".
+func openInEditor(path string) error {
+	editor := strings.TrimSpace(cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR")))
+	if editor == "" {
+		editor = "vi"
+		if runtime.GOOS == "windows" {
+			editor = "notepad"
+		}
+	}
+
+	editorCmd, err := editorCommand(editor, path)
+	if err != nil {
+		return fmt.Errorf("preparing editor %q: %w", editor, err)
+	}
+	editorCmd.Stdin = os.Stdin
+	editorCmd.Stdout = os.Stdout
+	editorCmd.Stderr = os.Stderr
+
+	if err := editorCmd.Run(); err != nil {
+		return fmt.Errorf("running editor %q: %w", editor, err)
+	}
+	return nil
 }
 
 var configResetCmd = &cobra.Command{

@@ -419,6 +419,7 @@ func TestHistoryPruneDryRunAndApply(t *testing.T) {
 
 func TestHistoryEditAndPath(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "true")
 
 	if err := historyEditCmd.RunE(historyEditCmd, nil); err != nil {
@@ -427,6 +428,10 @@ func TestHistoryEditAndPath(t *testing.T) {
 	path := historyPathForTest(t)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("history file missing after edit: %v", err)
+	}
+	// The editor exited without saving; the created history must still load.
+	if err := history.NewStore(path).Load(); err != nil {
+		t.Fatalf("history created by edit does not load: %v", err)
 	}
 
 	var out bytes.Buffer

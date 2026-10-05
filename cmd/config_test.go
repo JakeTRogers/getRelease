@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -461,6 +462,59 @@ func TestConfigSetNormalizesPlatform(t *testing.T) {
 		}
 		if got := cfgViper.GetString(tt.key); got != tt.stored {
 			t.Errorf("config set %s %q stored %q, want %q", tt.key, tt.value, got, tt.stored)
+		}
+	}
+}
+
+func TestOpenInEditor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("editor commands run through sh on Unix only")
+	}
+	// The recorder lives in a directory with a space to exercise shell quoting.
+	dir := filepath.Join(t.TempDir(), "my editors")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(dir, "args")
+	recorder := filepath.Join(dir, "recorder")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsFile + "\"\n"
+	if err := os.WriteFile(recorder, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "config.yaml")
+
+	tests := []struct {
+		name, visual, editor string
+		wantArgs             string
+		wantErr              string
+	}{
+		{name: "EDITOR with arguments", editor: "'" + recorder + "' --wait", wantArgs: "--wait\n" + target + "\n"},
+		{name: "VISUAL takes precedence", visual: "'" + recorder + "' --visual", editor: "false", wantArgs: "--visual\n" + target + "\n"},
+		{name: "failing editor", editor: "false", wantErr: `running editor "false"`},
+	}
+	for _, tt := range tests {
+		t.Setenv("VISUAL", tt.visual)
+		t.Setenv("EDITOR", tt.editor)
+		if err := os.Remove(argsFile); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+
+		err := openInEditor(target)
+		if tt.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("%s: openInEditor() error = %v, want %q", tt.name, err, tt.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: openInEditor() error: %v", tt.name, err)
+		}
+		got, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatalf("%s: editor did not run: %v", tt.name, err)
+		}
+		if string(got) != tt.wantArgs {
+			t.Errorf("%s: editor args = %q, want %q", tt.name, got, tt.wantArgs)
 		}
 	}
 }

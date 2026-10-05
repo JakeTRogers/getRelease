@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -449,38 +449,21 @@ var historyPruneCmd = &cobra.Command{
 
 var historyEditCmd = &cobra.Command{
 	Use:          "edit",
-	Short:        "Open history file in $EDITOR",
+	Short:        "Open history file in $VISUAL or $EDITOR",
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = "vi"
-		}
 		path, err := config.HistoryFilePath()
 		if err != nil {
 			return fmt.Errorf("resolve history path: %w", err)
 		}
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create history dir: %w", err)
+		// Create a valid empty history rather than an empty file, which
+		// would fail to load if the editor exits without saving.
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			if err := history.NewStore(path).Save(); err != nil {
+				return fmt.Errorf("create history file: %w", err)
+			}
 		}
-		// Ensure the file exists
-		f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o644)
-		if err != nil {
-			return fmt.Errorf("ensure history file: %w", err)
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("closing history file: %w", err)
-		}
-
-		e := exec.Command(editor, path)
-		e.Stdin = os.Stdin
-		e.Stdout = os.Stdout
-		e.Stderr = os.Stderr
-		if err := e.Run(); err != nil {
-			return fmt.Errorf("running editor: %w", err)
-		}
-		return nil
+		return openInEditor(path)
 	},
 }
 
