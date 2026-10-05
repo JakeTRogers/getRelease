@@ -282,6 +282,26 @@ func completeOutputFormatValues(_ *cobra.Command, _ []string, toComplete string)
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
+func completeConfigShowFormatValues(_ *cobra.Command, _ []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	options := []struct {
+		value       string
+		description string
+	}{
+		{value: "yaml", description: "YAML output"},
+		{value: "json", description: "machine-readable JSON output"},
+	}
+
+	completions := make([]cobra.Completion, 0, len(options))
+	for _, option := range options {
+		if !matchesCompletion(option.value, toComplete) {
+			continue
+		}
+		completions = append(completions, cobra.CompletionWithDesc(option.value, option.description))
+	}
+
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
 func completePinLevels(_ *cobra.Command, _ []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	options := []struct {
 		value       string

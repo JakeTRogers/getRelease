@@ -268,3 +268,45 @@ func TestConfigResetKeyRemovesItFromFile(t *testing.T) {
 		t.Errorf("config file = %q, want %q", got, want)
 	}
 }
+
+func TestConfigShowFormats(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+	t.Cleanup(func() {
+		if err := configShowCmd.Flags().Set("format", "yaml"); err != nil {
+			t.Errorf("reset format: %v", err)
+		}
+	})
+
+	tests := []struct {
+		format     string
+		wantPrefix string
+		wantErr    string
+	}{
+		{format: "yaml", wantPrefix: "assetpreferences:"},
+		{format: "text", wantPrefix: "assetpreferences:"}, // legacy alias for yaml
+		{format: "JSON", wantPrefix: "{"},
+		{format: "xml", wantErr: `unsupported output format "xml": use yaml or json`},
+	}
+	for _, tt := range tests {
+		if err := configShowCmd.Flags().Set("format", tt.format); err != nil {
+			t.Fatalf("set format: %v", err)
+		}
+		var out bytes.Buffer
+		configShowCmd.SetOut(&out)
+
+		err := configShowCmd.RunE(configShowCmd, nil)
+		if tt.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("config show --format %s error = %v, want %q", tt.format, err, tt.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("config show --format %s error: %v", tt.format, err)
+		}
+		if !strings.HasPrefix(out.String(), tt.wantPrefix) {
+			t.Errorf("config show --format %s output = %q, want prefix %q", tt.format, out.String(), tt.wantPrefix)
+		}
+	}
+}

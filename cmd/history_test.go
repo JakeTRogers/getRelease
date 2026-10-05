@@ -32,6 +32,40 @@ func TestHistoryListEmpty(t *testing.T) {
 	}
 }
 
+func TestHistoryListEmptyJSON(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	if err := historyListCmd.Flags().Set("format", "json"); err != nil {
+		t.Fatalf("set format: %v", err)
+	}
+
+	var out bytes.Buffer
+	historyListCmd.SetOut(&out)
+
+	if err := historyListCmd.RunE(historyListCmd, nil); err != nil {
+		t.Fatalf("history list error: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Fatalf("history list json output = %q, want []", got)
+	}
+}
+
+func TestHistoryListRejectsUnknownFormat(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	if err := historyListCmd.Flags().Set("format", "xml"); err != nil {
+		t.Fatalf("set format: %v", err)
+	}
+	historyListCmd.SetOut(&bytes.Buffer{})
+
+	err := historyListCmd.RunE(historyListCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), `unsupported output format "xml"`) {
+		t.Fatalf("history list error = %v, want unsupported format error", err)
+	}
+}
+
 func TestHistoryListJSON(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
 	resetHistoryListFlags(t)

@@ -6,6 +6,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/JakeTRogers/getRelease/internal/github"
 )
 
 var listCmd = &cobra.Command{
@@ -46,6 +48,10 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 	tag, _ := cmd.Flags().GetString("tag")
 	format, _ := cmd.Flags().GetString("format")
+	format, err = normalizeOutputFormat(format)
+	if err != nil {
+		return err
+	}
 
 	client, err := newGitHubClient(host)
 	if err != nil {
@@ -66,15 +72,18 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 		return fmt.Errorf("listing releases: %w", err)
 	}
 
+	if format == "json" {
+		if releases == nil {
+			releases = []github.Release{}
+		}
+		return outputJSON(cmd, releases)
+	}
+
 	if len(releases) == 0 {
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "No releases found for %s/%s\n", owner, repo); err != nil {
 			return fmt.Errorf("writing empty releases message: %w", err)
 		}
 		return nil
-	}
-
-	if format == "json" {
-		return outputJSON(cmd, releases)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Releases for %s/%s:\n\n", owner, repo); err != nil {
@@ -109,15 +118,19 @@ func listAssets(cmd *cobra.Command, client releaseClient, host, owner, repo, tag
 		return fmt.Errorf("fetching release %s: %w", tag, err)
 	}
 
+	if format == "json" {
+		assets := release.Assets
+		if assets == nil {
+			assets = []github.Asset{}
+		}
+		return outputJSON(cmd, assets)
+	}
+
 	if len(release.Assets) == 0 {
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Release %s has no downloadable assets\n", tag); err != nil {
 			return fmt.Errorf("writing empty assets message: %w", err)
 		}
 		return nil
-	}
-
-	if format == "json" {
-		return outputJSON(cmd, release.Assets)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Assets for %s/%s %s:\n\n", owner, repo, release.DisplayName()); err != nil {

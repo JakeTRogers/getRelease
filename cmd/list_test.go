@@ -206,3 +206,81 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestRunListRejectsUnknownFormat(t *testing.T) {
+	useTestCommandDeps(t, &fakeReleaseClient{
+		listReleases: func(_, _ string, _ int) ([]github.Release, error) {
+			t.Fatal("ListReleases() should not be called with an invalid format")
+			return nil, nil
+		},
+	})
+
+	cmd := &cobra.Command{}
+	addListTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "format": "xml"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+
+	err := runList(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), `unsupported output format "xml"`) {
+		t.Fatalf("runList() error = %v, want unsupported format error", err)
+	}
+}
+
+func TestRunListAcceptsUppercaseJSON(t *testing.T) {
+	useTestCommandDeps(t, &fakeReleaseClient{
+		listReleases: func(_, _ string, _ int) ([]github.Release, error) {
+			return []github.Release{{TagName: "v1.0.0"}}, nil
+		},
+	})
+
+	cmd := &cobra.Command{}
+	addListTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "format": "JSON"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runList(cmd, nil); err != nil {
+		t.Fatalf("runList() error: %v", err)
+	}
+	var got []github.Release
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("runList() output is not JSON: %v\n%s", err, out.String())
+	}
+}
+
+func TestListEmptyJSONIsEmptyArray(t *testing.T) {
+	client := &fakeReleaseClient{
+		listReleases: func(_, _ string, _ int) ([]github.Release, error) {
+			return nil, nil
+		},
+		getReleaseByTag: func(_, _, tag string) (*github.Release, error) {
+			return &github.Release{TagName: tag}, nil
+		},
+	}
+	cmd := &cobra.Command{}
+	addListTestFlags(cmd)
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := listReleases(cmd, client, "github.com", "cli", "empty", "json"); err != nil {
+		t.Fatalf("listReleases() error: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Errorf("listReleases() json output = %q, want []", got)
+	}
+
+	out.Reset()
+	if err := listAssets(cmd, client, "github.com", "cli", "tool", "v1.0.0", "json"); err != nil {
+		t.Fatalf("listAssets() error: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Errorf("listAssets() json output = %q, want []", got)
+	}
+}

@@ -51,13 +51,17 @@ var configShowCmd = &cobra.Command{
 	Short: "Display effective configuration",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		format, _ := cmd.Flags().GetString("format")
+		format, err := normalizeConfigShowFormat(format)
+		if err != nil {
+			return err
+		}
 
 		settings := cfgViper.AllSettings()
 		if tok, ok := settings["token"].(string); ok && tok != "" {
 			settings["token"] = "<redacted>"
 		}
 
-		switch strings.ToLower(format) {
+		switch format {
 		case "json":
 			out, err := json.MarshalIndent(settings, "", "  ")
 			if err != nil {
@@ -129,6 +133,19 @@ var configSetCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// normalizeConfigShowFormat validates the config show format. "text" is
+// accepted as an alias for yaml, the format it has always printed.
+func normalizeConfigShowFormat(format string) (string, error) {
+	switch strings.ToLower(format) {
+	case "", "yaml", "text":
+		return "yaml", nil
+	case "json":
+		return "json", nil
+	default:
+		return "", fmt.Errorf("unsupported output format %q: use yaml or json", format)
+	}
 }
 
 // canonicalConfigKey maps a key typed in any case (Viper ignores case) to its
@@ -324,8 +341,8 @@ var configPathCmd = &cobra.Command{
 }
 
 func init() {
-	configShowCmd.Flags().String("format", "text", "output format: text, json")
-	mustRegisterFlagCompletion(configShowCmd, "format", completeOutputFormatValues)
+	configShowCmd.Flags().String("format", "yaml", "output format: yaml, json")
+	mustRegisterFlagCompletion(configShowCmd, "format", completeConfigShowFormatValues)
 
 	configGetCmd.ValidArgsFunction = completeConfigKeyArg
 	configSetCmd.ValidArgsFunction = completeConfigKeyArg

@@ -604,7 +604,7 @@ func normalizeOutputFormat(format string) (string, error) {
 	case "json":
 		return "json", nil
 	default:
-		return "", fmt.Errorf("unsupported output format: %s", format)
+		return "", fmt.Errorf("unsupported output format %q: use text or json", format)
 	}
 }
 

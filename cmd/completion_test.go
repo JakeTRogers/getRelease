@@ -85,6 +85,22 @@ func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 	}
 }
 
+func TestCompleteConfigShowFormatValues(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completeConfigShowFormatValues(&cobra.Command{}, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeConfigShowFormatValues() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+	want := []string{
+		"yaml\tYAML output",
+		"json\tmachine-readable JSON output",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeConfigShowFormatValues() = %v, want %v", got, want)
+	}
+}
+
 func TestCompleteOutputFormatValues(t *testing.T) {
 	t.Parallel()
 

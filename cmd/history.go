@@ -45,6 +45,10 @@ var historyListCmd = &cobra.Command{
 		}
 
 		format, _ := cmd.Flags().GetString("format")
+		format, err = normalizeOutputFormat(format)
+		if err != nil {
+			return err
+		}
 		sortValue, _ := cmd.Flags().GetString("sort")
 		sortBy, err := normalizeHistoryListSort(sortValue)
 		if err != nil {
@@ -52,7 +56,7 @@ var historyListCmd = &cobra.Command{
 		}
 
 		records := store.Records()
-		if len(records) == 0 {
+		if len(records) == 0 && format == "text" {
 			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "No history records found."); err != nil {
 				return fmt.Errorf("writing empty history message: %w", err)
 			}
