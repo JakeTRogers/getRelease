@@ -39,8 +39,9 @@ func TestInitConfigSetsLogLevel(t *testing.T) {
 		enableDebug bool
 	}{
 		{name: "default", verbose: "0", enableInfo: false, enableDebug: false},
-		{name: "info", verbose: "2", enableInfo: true, enableDebug: false},
-		{name: "debug", verbose: "3", enableInfo: true, enableDebug: true},
+		{name: "info", verbose: "1", enableInfo: true, enableDebug: false},
+		{name: "debug", verbose: "2", enableInfo: true, enableDebug: true},
+		{name: "extra -v stays debug", verbose: "3", enableInfo: true, enableDebug: true},
 	}
 
 	for _, tt := range tests {
@@ -55,6 +56,9 @@ func TestInitConfigSetsLogLevel(t *testing.T) {
 		}
 
 		logger := slog.Default()
+		if !logger.Enabled(context.Background(), slog.LevelWarn) {
+			t.Fatalf("%s: warnings disabled, want them shown at every verbosity", tt.name)
+		}
 		if got := logger.Enabled(context.Background(), slog.LevelInfo); got != tt.enableInfo {
 			t.Fatalf("%s: info enabled = %v, want %v", tt.name, got, tt.enableInfo)
 		}

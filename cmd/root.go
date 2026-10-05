@@ -112,7 +112,7 @@ func reportError(w io.Writer, err error) int {
 
 func init() {
 	// Persistent flags (available to all subcommands)
-	rootCmd.PersistentFlags().CountP("verbose", "v", "increase log verbosity (repeatable: -v, -vv, -vvv)")
+	rootCmd.PersistentFlags().CountP("verbose", "v", "increase log verbosity: -v for info, -vv for debug")
 
 	// Root-specific flags
 	rootCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
@@ -146,18 +146,17 @@ func initConfig(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Set log level based on verbosity count
+	// Set log level based on verbosity count. Warnings are always shown:
+	// they report problems such as skipped history records.
 	verbose, _ := cmd.Flags().GetCount("verbose")
 	var level slog.Level
 	switch {
-	case verbose >= 3:
+	case verbose >= 2:
 		level = slog.LevelDebug
-	case verbose == 2:
-		level = slog.LevelInfo
 	case verbose == 1:
-		level = slog.LevelWarn
+		level = slog.LevelInfo
 	default:
-		level = slog.LevelError
+		level = slog.LevelWarn
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
