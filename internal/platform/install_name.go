@@ -45,12 +45,12 @@ var installNameExtraKeywords = []string{
 // ResolveInstallNames returns the final on-disk basenames for the selected binaries.
 // It strips recognized platform suffixes when that yields a safe command name and
 // falls back to the original basename when the resolved names would collide.
-func ResolveInstallNames(repo, assetName, osName, arch string, binaries []string) map[string]string {
+func ResolveInstallNames(repo, assetName, osName, arch, tag string, binaries []string) map[string]string {
 	resolved := make(map[string]string, len(binaries))
 	counts := make(map[string]int, len(binaries))
 
 	for _, bin := range binaries {
-		name := SuggestInstallName(repo, assetName, bin, osName, arch)
+		name := SuggestInstallName(repo, assetName, bin, osName, arch, tag)
 		resolved[bin] = name
 		counts[name]++
 	}
@@ -66,15 +66,22 @@ func ResolveInstallNames(repo, assetName, osName, arch string, binaries []string
 
 // SuggestInstallName returns the preferred on-disk basename for a binary.
 // The original basename is returned when no confident normalization is found.
-func SuggestInstallName(repo, assetName, binaryName, osName, arch string) string {
+// tag is the release tag; a trailing copy of its version is always stripped,
+// so versioned names such as "shfmt_v3.10.0_linux_amd64" install as "shfmt".
+func SuggestInstallName(repo, assetName, binaryName, osName, arch, tag string) string {
 	originalBase := filepath.Base(binaryName)
 	stem, ext := splitInstallName(originalBase)
 	trimmedStem, removedPlatformSuffix := trimPlatformSuffixes(stem, osName, arch)
-	if !removedPlatformSuffix || trimmedStem == "" {
+
+	withoutTagVersion, removedTagVersion := trimTagVersionSuffix(trimmedStem, tag)
+	switch {
+	case removedTagVersion:
+		trimmedStem = withoutTagVersion
+	case removedPlatformSuffix:
+		trimmedStem = maybeTrimVersionSuffix(trimmedStem, repo, assetName, osName, arch)
+	default:
 		return originalBase
 	}
-
-	trimmedStem = maybeTrimVersionSuffix(trimmedStem, repo, assetName, osName, arch)
 	if !looksLikeCommandName(trimmedStem) {
 		return originalBase
 	}
@@ -91,7 +98,8 @@ func splitInstallName(name string) (string, string) {
 	}
 
 	ext := filepath.Ext(name)
-	if strings.ContainsAny(ext, "-_") {
+	// A numeric "extension" is the tail of a version, as in "tool-1.2.3".
+	if strings.ContainsAny(ext, "-_") || isAllDigits(strings.TrimPrefix(ext, ".")) {
 		return name, ""
 	}
 	return strings.TrimSuffix(name, ext), ext
@@ -188,6 +196,37 @@ func maybeTrimVersionSuffix(stem, repo, assetName, osName, arch string) string {
 	return stem
 }
 
+// trimTagVersionSuffix strips the release's own version, with an optional
+// "v" prefix, from the end of stem: "shfmt_v3.10.0" with tag "v3.10.0" yields
+// "shfmt". Matching the actual release version, rather than any version-like
+// token, avoids renaming commands whose names merely end in digits.
+func trimTagVersionSuffix(stem, tag string) (string, bool) {
+	version := strings.ToLower(tagVersion(tag))
+	if version == "" {
+		return "", false
+	}
+	lower := strings.ToLower(stem)
+	for _, sep := range []string{"-", "_", "."} {
+		for _, prefix := range []string{"v", ""} {
+			needle := sep + prefix + version
+			if strings.HasSuffix(lower, needle) {
+				return strings.TrimRight(stem[:len(stem)-len(needle)], "-_."), true
+			}
+		}
+	}
+	return "", false
+}
+
+// tagVersion returns tag from its first digit onward, so "v1.2.3" and
+// "jq-1.7.1" yield "1.2.3" and "1.7.1". It returns "" when tag has no digit.
+func tagVersion(tag string) string {
+	idx := strings.IndexFunc(tag, unicode.IsDigit)
+	if idx < 0 {
+		return ""
+	}
+	return tag[idx:]
+}
+
 func trimTrailingVersion(stem string) (string, bool) {
 	for _, sep := range []string{"-", "_", "."} {
 		idx := strings.LastIndex(stem, sep)
@@ -255,4 +294,16 @@ func normalizeName(name string) string {
 		}
 	}
 	return b.String()
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -30,9 +29,10 @@ var upgradeCmd = &cobra.Command{
 }
 
 type upgradeMapping struct {
-	src string
-	dst string
-	bin history.Binary
+	src  string
+	dst  string
+	name string // binary path within the new payload, recorded in history
+	bin  history.Binary
 }
 
 func init() {
@@ -311,7 +311,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		if err != nil {
 			return false, fmt.Errorf("scanning extracted files: %w", err)
 		}
-		maps, missing = buildArchiveUpgradeMappings(*rec, extractedDir, found)
+		maps, missing = buildArchiveUpgradeMappings(*rec, chosen.Name, release.TagName, extractedDir, found)
 	} else {
 		maps, missing = buildSingleAssetUpgradeMappings(*rec, chosen, destPath)
 	}
@@ -335,10 +335,17 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		}
 	}
 
-	// Update history record
+	// Update history record. Binary names are refreshed so the next upgrade
+	// matches against this release's payload rather than the original one.
 	updated := *rec
 	updated.Tag = release.TagName
 	updated.Asset = history.AssetInfo{Name: chosen.Name, URL: chosen.DownloadURL}
+	updated.Binaries = make([]history.Binary, 0, len(maps))
+	for _, m := range maps {
+		bin := m.bin
+		bin.Name = m.name
+		updated.Binaries = append(updated.Binaries, bin)
+	}
 	if err := store.Add(updated); err != nil {
 		return false, fmt.Errorf("updating history: %w", err)
 	}
@@ -503,38 +510,67 @@ func upgradeFallbackIsNewer(releases []github.Release, fallback *github.Release,
 	return true
 }
 
-func buildArchiveUpgradeMappings(rec history.Record, extractedDir string, found []string) ([]upgradeMapping, []string) {
-	lookup := make(map[string]string, len(found))
+// buildArchiveUpgradeMappings maps each recorded binary to a file in the new
+// release payload by exact recorded path, basename, then suggested install name.
+// Only if those fail is the installed alias tried as a basename, then as a
+// suggested install name. Suggested names strip platform and version suffixes.
+func buildArchiveUpgradeMappings(rec history.Record, assetName, tag, extractedDir string, found []string) ([]upgradeMapping, []string) {
+	byPath := make(map[string]string, len(found))
+	byBase := make(map[string]string, len(found))
+	byInstallName := make(map[string]string, len(found))
 	for _, rel := range found {
-		base := filepath.Base(rel)
-		candidate := filepath.Join(extractedDir, rel)
-		if existing, ok := lookup[base]; ok {
-			lookup[base] = cmp.Or(preferredUpgradePath(candidate, existing), existing)
-			continue
-		}
-		lookup[base] = candidate
+		byPath[rel] = rel
+		addUpgradeCandidate(byBase, filepath.Base(rel), rel)
+		addUpgradeCandidate(byInstallName, platform.SuggestInstallName(rec.Repo, assetName, rel, rec.OS, rec.Arch, tag), rel)
 	}
 
 	maps := make([]upgradeMapping, 0, len(rec.Binaries))
 	missing := make([]string, 0)
 	for _, bin := range rec.Binaries {
-		src, ok := upgradeBinarySource(lookup, bin)
+		var recordedBase, recordedInstallName string
+		if bin.Name != "" {
+			recordedBase = filepath.Base(bin.Name)
+			recordedInstallName = platform.SuggestInstallName(rec.Repo, rec.Asset.Name, bin.Name, rec.OS, rec.Arch, rec.Tag)
+		}
+
+		rel, ok := lookupUpgradeSource(byPath, bin.Name)
+		if !ok {
+			rel, ok = lookupUpgradeSource(byBase, recordedBase)
+		}
+		if !ok {
+			rel, ok = lookupUpgradeSource(byInstallName, recordedInstallName)
+		}
+		if !ok {
+			rel, ok = lookupUpgradeSource(byBase, bin.InstalledAs)
+		}
+		if !ok {
+			rel, ok = lookupUpgradeSource(byInstallName, bin.InstalledAs)
+		}
 		if !ok {
 			missing = append(missing, displayBinaryName(bin))
 			continue
 		}
-		maps = append(maps, upgradeMapping{src: src, dst: bin.InstallPath, bin: bin})
+		maps = append(maps, upgradeMapping{src: filepath.Join(extractedDir, rel), dst: bin.InstallPath, name: rel, bin: bin})
 	}
 
 	return maps, missing
 }
 
+// buildSingleAssetUpgradeMappings maps a non-archive asset, which is itself
+// the binary, onto the recorded binaries. A single recorded binary is replaced
+// whatever the asset is called, since asset names often embed the version
+// (e.g. shfmt_v3.10.0_linux_amd64); otherwise the names must match.
 func buildSingleAssetUpgradeMappings(rec history.Record, chosen github.Asset, destPath string) ([]upgradeMapping, []string) {
+	if len(rec.Binaries) == 1 {
+		bin := rec.Binaries[0]
+		return []upgradeMapping{{src: destPath, dst: bin.InstallPath, name: chosen.Name, bin: bin}}, nil
+	}
+
 	maps := make([]upgradeMapping, 0, len(rec.Binaries))
 	missing := make([]string, 0)
 	for _, bin := range rec.Binaries {
 		if bin.Name == chosen.Name || bin.InstalledAs == chosen.Name {
-			maps = append(maps, upgradeMapping{src: destPath, dst: bin.InstallPath, bin: bin})
+			maps = append(maps, upgradeMapping{src: destPath, dst: bin.InstallPath, name: chosen.Name, bin: bin})
 			continue
 		}
 		missing = append(missing, displayBinaryName(bin))
@@ -543,20 +579,26 @@ func buildSingleAssetUpgradeMappings(rec history.Record, chosen github.Asset, de
 	return maps, missing
 }
 
-func upgradeBinarySource(lookup map[string]string, bin history.Binary) (string, bool) {
-	for _, name := range uniqueBinaryNames(bin) {
-		if src, ok := lookup[name]; ok {
-			return src, true
+// addUpgradeCandidate records rel under name, keeping the shallower path when
+// two payload files share a name.
+func addUpgradeCandidate(lookup map[string]string, name, rel string) {
+	if existing, ok := lookup[name]; ok {
+		lookup[name] = cmp.Or(preferredUpgradePath(rel, existing), existing)
+		return
+	}
+	lookup[name] = rel
+}
+
+func lookupUpgradeSource(lookup map[string]string, names ...string) (string, bool) {
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if rel, ok := lookup[name]; ok {
+			return rel, true
 		}
 	}
 	return "", false
-}
-
-func uniqueBinaryNames(bin history.Binary) []string {
-	names := []string{bin.Name, bin.InstalledAs}
-	return slices.DeleteFunc(names, func(name string) bool {
-		return name == ""
-	})
 }
 
 func displayBinaryName(bin history.Binary) string {

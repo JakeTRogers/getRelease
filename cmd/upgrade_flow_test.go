@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -309,6 +310,55 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	}
 	if records[0].PinLevel != history.PinMinor {
 		t.Fatalf("history pin level after upgrade = %q, want %q", records[0].PinLevel, history.PinMinor)
+	}
+}
+
+func TestUpgradeRecordVersionedAssetRefreshesBinaryName(t *testing.T) {
+	baseDir := t.TempDir()
+	newAsset := github.Asset{
+		Name:        "shfmt_v3.14.1_linux_amd64",
+		DownloadURL: "https://example.invalid/shfmt_v3.14.1_linux_amd64",
+		Size:        2048,
+	}
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{TagName: "v3.14.1", Assets: []github.Asset{newAsset}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	})
+
+	installDir := filepath.Join(baseDir, "bin")
+	targetPath := filepath.Join(installDir, "shfmt")
+	writeExecutableFile(t, targetPath)
+
+	rec := newHistoryRecord("rec1", "mvdan", "sh", "v3.10.0", "shfmt_v3.10.0_linux_amd64", "shfmt", targetPath)
+	store := history.NewStore(filepath.Join(baseDir, "history.json"))
+	if err := store.Add(rec); err != nil {
+		t.Fatalf("add history record: %v", err)
+	}
+
+	cfg := &config.AppConfig{
+		DownloadDir:      baseDir,
+		InstallDir:       installDir,
+		AssetPreferences: config.AssetPreferences{Formats: []string{"tar.gz", "zip"}},
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	upgraded, err := upgradeRecord(cmd, store, cfg, &rec, false, disabledCooldown())
+	if err != nil {
+		t.Fatalf("upgradeRecord() error: %v", err)
+	}
+	if !upgraded {
+		t.Fatal("upgradeRecord() upgraded = false, want true")
+	}
+
+	records := store.Records()
+	want := []history.Binary{{Name: "shfmt_v3.14.1_linux_amd64", InstalledAs: "shfmt", InstallPath: targetPath}}
+	if len(records) != 1 || !reflect.DeepEqual(records[0].Binaries, want) {
+		t.Fatalf("history binaries after upgrade = %+v, want %+v", records, want)
 	}
 }
 

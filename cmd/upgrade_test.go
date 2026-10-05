@@ -257,7 +257,7 @@ func TestBuildArchiveUpgradeMappings(t *testing.T) {
 		},
 	}
 
-	maps, missing := buildArchiveUpgradeMappings(rec, "/tmp/extracted", []string{"tool", "nested/helper"})
+	maps, missing := buildArchiveUpgradeMappings(rec, "tool.tar.gz", "v1.0.1", "/tmp/extracted", []string{"tool", "nested/helper"})
 	if len(missing) != 0 {
 		t.Fatalf("buildArchiveUpgradeMappings() missing = %v, want none", missing)
 	}
@@ -281,7 +281,7 @@ func TestBuildArchiveUpgradeMappings_UsesInstalledAsFallback(t *testing.T) {
 		},
 	}
 
-	maps, missing := buildArchiveUpgradeMappings(rec, "/tmp/extracted", []string{"argocd"})
+	maps, missing := buildArchiveUpgradeMappings(rec, "argocd.tar.gz", "v1.0.1", "/tmp/extracted", []string{"argocd"})
 	if len(missing) != 0 {
 		t.Fatalf("buildArchiveUpgradeMappings() missing = %v, want none", missing)
 	}
@@ -293,6 +293,167 @@ func TestBuildArchiveUpgradeMappings_UsesInstalledAsFallback(t *testing.T) {
 	}
 	if maps[0].dst != "/usr/local/bin/argocd" {
 		t.Fatalf("mapping dst = %q, want %q", maps[0].dst, "/usr/local/bin/argocd")
+	}
+}
+
+func TestBuildArchiveUpgradeMappings_PrefersRecordedIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		recordedName string
+		found        []string
+		wantName     string
+	}{
+		{
+			name:         "exact recorded path before shallower basename",
+			recordedName: "extras/bin/tool",
+			found:        []string{"bin/tool", "extras/bin/tool", "helper"},
+			wantName:     "extras/bin/tool",
+		},
+		{
+			name:         "recorded basename before normalized name and alias",
+			recordedName: "old/foo-linux-amd64",
+			found:        []string{"foo", "helper", "new/foo-linux-amd64"},
+			wantName:     "new/foo-linux-amd64",
+		},
+		{
+			name:         "normalized recorded name before alias basename",
+			recordedName: "foo-v1.0.0/foo-v1.0.0-linux-amd64",
+			found:        []string{"helper", "foo-v1.1.0/foo-v1.1.0-linux-amd64"},
+			wantName:     "foo-v1.1.0/foo-v1.1.0-linux-amd64",
+		},
+		{
+			name:         "normalized recorded name before normalized alias",
+			recordedName: "foo-v1.0.0/foo-v1.0.0-linux-amd64",
+			found:        []string{"helper-linux-amd64", "foo-v1.1.0/foo-v1.1.0-linux-amd64"},
+			wantName:     "foo-v1.1.0/foo-v1.1.0-linux-amd64",
+		},
+		{
+			name:         "alias basename before normalized alias",
+			recordedName: "old/renamed",
+			found:        []string{"helper-linux-amd64", "new/helper"},
+			wantName:     "new/helper",
+		},
+		{
+			name:         "normalized alias fallback",
+			recordedName: "old/renamed",
+			found:        []string{"helper-linux-amd64"},
+			wantName:     "helper-linux-amd64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bin := history.Binary{
+				Name:        tt.recordedName,
+				InstalledAs: "helper",
+				InstallPath: "/usr/local/bin/helper",
+			}
+			rec := history.Record{
+				Repo:     "foo",
+				Tag:      "v1.0.0",
+				Asset:    history.AssetInfo{Name: "foo-v1.0.0-linux-amd64.tar.gz"},
+				OS:       "linux",
+				Arch:     "amd64",
+				Binaries: []history.Binary{bin},
+			}
+			maps, missing := buildArchiveUpgradeMappings(rec, "foo-v1.1.0-linux-amd64.tar.gz", "v1.1.0", "/tmp/extracted", tt.found)
+			if len(missing) != 0 {
+				t.Fatalf("buildArchiveUpgradeMappings() missing = %v, want none", missing)
+			}
+			want := []upgradeMapping{{
+				src:  filepath.Join("/tmp/extracted", tt.wantName),
+				dst:  bin.InstallPath,
+				name: tt.wantName,
+				bin:  bin,
+			}}
+			if !reflect.DeepEqual(maps, want) {
+				t.Fatalf("buildArchiveUpgradeMappings() = %+v, want %+v", maps, want)
+			}
+		})
+	}
+}
+
+func TestBuildArchiveUpgradeMappings_InstallAsWithVersionedDir(t *testing.T) {
+	t.Parallel()
+
+	rec := history.Record{
+		Repo:  "bat",
+		Tag:   "v0.25.0",
+		Asset: history.AssetInfo{Name: "bat-v0.25.0-x86_64-unknown-linux-gnu.tar.gz"},
+		OS:    "linux",
+		Arch:  "amd64",
+		Binaries: []history.Binary{
+			{Name: "bat-v0.25.0-x86_64-unknown-linux-gnu/bat", InstalledAs: "batold", InstallPath: "/usr/local/bin/batold"},
+		},
+	}
+
+	newRel := "bat-v0.26.1-x86_64-unknown-linux-gnu/bat"
+	maps, missing := buildArchiveUpgradeMappings(rec, "bat-v0.26.1-x86_64-unknown-linux-gnu.tar.gz", "v0.26.1", "/tmp/extracted", []string{newRel})
+	if len(missing) != 0 {
+		t.Fatalf("buildArchiveUpgradeMappings() missing = %v, want none", missing)
+	}
+	if len(maps) != 1 {
+		t.Fatalf("buildArchiveUpgradeMappings() returned %d mappings, want 1", len(maps))
+	}
+	if want := filepath.Join("/tmp/extracted", newRel); maps[0].src != want {
+		t.Errorf("mapping src = %q, want %q", maps[0].src, want)
+	}
+	if maps[0].dst != "/usr/local/bin/batold" {
+		t.Errorf("mapping dst = %q, want %q", maps[0].dst, "/usr/local/bin/batold")
+	}
+	if maps[0].name != newRel {
+		t.Errorf("mapping name = %q, want %q", maps[0].name, newRel)
+	}
+}
+
+func TestBuildArchiveUpgradeMappings_VersionedBinaryName(t *testing.T) {
+	t.Parallel()
+
+	// The binary inside the archive carries the version, and was installed
+	// under a custom name, so neither basename nor InstalledAs matches.
+	rec := history.Record{
+		Repo:  "foo",
+		Tag:   "v1.0.0",
+		Asset: history.AssetInfo{Name: "foo-v1.0.0-linux-amd64.tar.gz"},
+		OS:    "linux",
+		Arch:  "amd64",
+		Binaries: []history.Binary{
+			{Name: "foo-v1.0.0/foo-v1.0.0-linux-amd64", InstalledAs: "myfoo", InstallPath: "/usr/local/bin/myfoo"},
+		},
+	}
+
+	newRel := "foo-v1.1.0/foo-v1.1.0-linux-amd64"
+	maps, missing := buildArchiveUpgradeMappings(rec, "foo-v1.1.0-linux-amd64.tar.gz", "v1.1.0", "/tmp/extracted", []string{newRel, "foo-v1.1.0/helper"})
+	if len(missing) != 0 {
+		t.Fatalf("buildArchiveUpgradeMappings() missing = %v, want none", missing)
+	}
+	if len(maps) != 1 || maps[0].name != newRel {
+		t.Fatalf("buildArchiveUpgradeMappings() = %+v, want one mapping from %q", maps, newRel)
+	}
+}
+
+func TestBuildSingleAssetUpgradeMappings_VersionedAssetName(t *testing.T) {
+	t.Parallel()
+
+	rec := history.Record{
+		Binaries: []history.Binary{
+			{Name: "shfmt_v3.10.0_linux_amd64", InstalledAs: "shfmt_v3.10.0", InstallPath: "/usr/local/bin/shfmt_v3.10.0"},
+		},
+	}
+
+	maps, missing := buildSingleAssetUpgradeMappings(rec, github.Asset{Name: "shfmt_v3.14.1_linux_amd64"}, "/tmp/shfmt_v3.14.1_linux_amd64")
+	if len(missing) != 0 {
+		t.Fatalf("buildSingleAssetUpgradeMappings() missing = %v, want none", missing)
+	}
+	if len(maps) != 1 {
+		t.Fatalf("buildSingleAssetUpgradeMappings() returned %d mappings, want 1", len(maps))
+	}
+	if maps[0].dst != "/usr/local/bin/shfmt_v3.10.0" || maps[0].name != "shfmt_v3.14.1_linux_amd64" {
+		t.Errorf("mapping = %+v, want dst at recorded path and name of new asset", maps[0])
 	}
 }
 

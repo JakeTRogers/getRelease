@@ -461,7 +461,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	var installedNames []string
 	installer := newBinaryInstaller(cfg.InstallCommand)
 	installAs, _ := cmd.Flags().GetString("install-as")
-	installNames, err := resolveInstallNamesForSelection(repo, selectedAsset.Name, osName, arch, toInstall, installAs)
+	installNames, err := resolveInstallNamesForSelection(repo, selectedAsset.Name, osName, arch, rel.TagName, toInstall, installAs)
 	if err != nil {
 		return err
 	}
@@ -560,9 +560,9 @@ func outputRootResult(w io.Writer, result rootCommandResult) error {
 	return enc.Encode(result)
 }
 
-func resolveInstallNamesForSelection(repo, assetName, osName, arch string, binaries []string, installAs string) (map[string]string, error) {
+func resolveInstallNamesForSelection(repo, assetName, osName, arch, tag string, binaries []string, installAs string) (map[string]string, error) {
 	if strings.TrimSpace(installAs) == "" {
-		return platform.ResolveInstallNames(repo, assetName, osName, arch, binaries), nil
+		return platform.ResolveInstallNames(repo, assetName, osName, arch, tag, binaries), nil
 	}
 
 	if len(binaries) != 1 {
