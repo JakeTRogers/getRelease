@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -195,6 +198,241 @@ func TestClient_RateLimit(t *testing.T) {
 	}
 }
 
+func TestClient_RateLimitError(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.October, 5, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		status        int
+		headers       map[string]string
+		body          string
+		want          bool
+		wantSecondary bool
+		wantResetAt   time.Time
+	}{
+		{
+			name: "429 with Retry-After", status: http.StatusTooManyRequests,
+			headers: map[string]string{"Retry-After": "30"},
+			want:    true, wantSecondary: true, wantResetAt: now.Add(30 * time.Second),
+		},
+		{
+			name: "403 with Retry-After", status: http.StatusForbidden,
+			headers: map[string]string{"Retry-After": "60"},
+			want:    true, wantSecondary: true, wantResetAt: now.Add(time.Minute),
+		},
+		{
+			name: "429 with exhausted primary limit", status: http.StatusTooManyRequests,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1700000000"},
+			want:    true, wantResetAt: time.Unix(1700000000, 0),
+		},
+		{
+			name: "429 without headers waits a minute", status: http.StatusTooManyRequests,
+			want: true, wantSecondary: true, wantResetAt: now.Add(time.Minute),
+		},
+		{
+			name: "403 secondary limit message", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "4000"},
+			body:    `{"message":"You have exceeded a secondary rate limit."}`,
+			want:    true, wantSecondary: true, wantResetAt: now.Add(time.Minute),
+		},
+		{
+			name: "403 forbidden is not a rate limit", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "10"},
+			body:    `{"message":"Resource protected by organization SAML enforcement."}`,
+		},
+	}
+
+	client := NewClient()
+	for _, tt := range tests {
+		resp := &http.Response{StatusCode: tt.status, Header: http.Header{}}
+		for k, v := range tt.headers {
+			resp.Header.Set(k, v)
+		}
+		got := client.rateLimitError(resp, []byte(tt.body), now)
+		if (got != nil) != tt.want {
+			t.Errorf("%s: rateLimitError() = %v, want rate limit %v", tt.name, got, tt.want)
+			continue
+		}
+		if got == nil {
+			continue
+		}
+		if got.Secondary != tt.wantSecondary || !got.ResetAt.Equal(tt.wantResetAt) {
+			t.Errorf("%s: rateLimitError() = %+v, want Secondary=%v ResetAt=%v", tt.name, got, tt.wantSecondary, tt.wantResetAt)
+		}
+	}
+}
+
+func TestRateLimitError_Message(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, time.October, 5, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		err          RateLimitError
+		wantContains string
+		wantHint     bool
+	}{
+		{name: "anonymous primary", err: RateLimitError{ResetAt: resetAt, Anonymous: true}, wantContains: "rate limit exceeded; resets at", wantHint: true},
+		{name: "authenticated primary", err: RateLimitError{ResetAt: resetAt}, wantContains: "rate limit exceeded; resets at"},
+		{name: "secondary", err: RateLimitError{ResetAt: resetAt, Secondary: true, Anonymous: true}, wantContains: "secondary rate limit exceeded; retry after"},
+	}
+	for _, tt := range tests {
+		msg := tt.err.Error()
+		if !strings.Contains(msg, tt.wantContains) {
+			t.Errorf("%s: Error() = %q, want it to contain %q", tt.name, msg, tt.wantContains)
+		}
+		if hint := strings.Contains(msg, "gh auth login"); hint != tt.wantHint {
+			t.Errorf("%s: Error() = %q, authentication hint present = %v, want %v", tt.name, msg, hint, tt.wantHint)
+		}
+	}
+}
+
+func TestClient_TooManyRequests(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP(srv.Client(), srv.URL)
+	var rl *RateLimitError
+
+	_, err := client.GetLatestRelease("owner", "repo")
+	if !isRateLimitError(err, &rl) || !rl.Secondary {
+		t.Errorf("GetLatestRelease() error = %v, want secondary RateLimitError", err)
+	}
+
+	_, err = client.DownloadAsset(Asset{DownloadURL: srv.URL + "/download/asset"}, filepath.Join(t.TempDir(), "asset"))
+	if !isRateLimitError(err, &rl) || !rl.Secondary {
+		t.Errorf("DownloadAsset() error = %v, want secondary RateLimitError", err)
+	}
+}
+
+func TestClient_DownloadAsset_SecondaryRateLimitBody(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "4000")
+		http.Error(w, `{"message":"You have exceeded a secondary rate limit."}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP(srv.Client(), srv.URL)
+	dest := filepath.Join(t.TempDir(), "asset")
+	before := time.Now()
+	n, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/download/asset"}, dest)
+	after := time.Now()
+
+	var rateErr *RateLimitError
+	if !errors.As(err, &rateErr) || !rateErr.Secondary || !rateErr.Anonymous {
+		t.Fatalf("DownloadAsset() error = %v, want anonymous secondary RateLimitError", err)
+	}
+	if rateErr.ResetAt.Before(before.Add(time.Minute)) || rateErr.ResetAt.After(after.Add(time.Minute)) {
+		t.Errorf("ResetAt = %v, want one minute after the response", rateErr.ResetAt)
+	}
+	if !strings.Contains(err.Error(), "secondary rate limit exceeded; retry after") {
+		t.Errorf("DownloadAsset() error = %v, want secondary-limit retry guidance", err)
+	}
+	if n != 0 {
+		t.Errorf("DownloadAsset() wrote %d bytes, want 0", n)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("failed download created %s (stat err: %v)", dest, statErr)
+	}
+}
+
+func TestClient_DownloadAsset_ErrorBody(t *testing.T) {
+	t.Parallel()
+
+	const bodyLimit = 64 << 10
+	tests := []struct {
+		name          string
+		status        int
+		headers       map[string]string
+		body          string
+		readError     bool
+		wantRead      int
+		wantRateLimit bool
+		wantSecondary bool
+		wantReadError bool
+	}{
+		{
+			name: "body read is bounded", status: http.StatusForbidden,
+			body: strings.Repeat("x", bodyLimit) + "secondary rate limit", wantRead: bodyLimit,
+		},
+		{
+			name: "ordinary forbidden is not a rate limit", status: http.StatusForbidden,
+			body:     `{"message":"Resource protected by organization SAML enforcement."}`,
+			wantRead: len(`{"message":"Resource protected by organization SAML enforcement."}`),
+		},
+		{
+			name: "body read failure is reported", status: http.StatusForbidden,
+			readError: true, wantReadError: true,
+		},
+		{
+			name: "primary limit does not depend on reading body", status: http.StatusForbidden,
+			headers:   map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1700000000"},
+			readError: true, wantRateLimit: true,
+		},
+		{
+			name: "retry after does not depend on reading body", status: http.StatusForbidden,
+			headers:   map[string]string{"Retry-After": "5"},
+			readError: true, wantRateLimit: true, wantSecondary: true,
+		},
+		{
+			name: "429 does not depend on reading body", status: http.StatusTooManyRequests,
+			readError: true, wantRateLimit: true, wantSecondary: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := strings.NewReader(tt.body)
+			var body io.Reader = reader
+			if tt.readError {
+				body = iotest.ErrReader(io.ErrUnexpectedEOF)
+			}
+			headers := http.Header{}
+			for key, value := range tt.headers {
+				headers.Set(key, value)
+			}
+			client := NewClientWithHTTP(&http.Client{
+				Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: tt.status, Header: headers, Body: io.NopCloser(body)}, nil
+				}),
+			}, "")
+			dest := filepath.Join(t.TempDir(), "asset")
+			n, err := client.DownloadAsset(Asset{DownloadURL: "https://example.invalid/asset"}, dest)
+			if n != 0 || err == nil {
+				t.Fatalf("DownloadAsset() = %d, %v, want 0 and an error", n, err)
+			}
+			var rateErr *RateLimitError
+			if got := errors.As(err, &rateErr); got != tt.wantRateLimit {
+				t.Fatalf("DownloadAsset() error = %v, rate limit = %v, want %v", err, got, tt.wantRateLimit)
+			}
+			if rateErr != nil && rateErr.Secondary != tt.wantSecondary {
+				t.Errorf("Secondary = %v, want %v", rateErr.Secondary, tt.wantSecondary)
+			}
+			if got := errors.Is(err, io.ErrUnexpectedEOF); got != tt.wantReadError {
+				t.Errorf("DownloadAsset() error = %v, read error = %v, want %v", err, got, tt.wantReadError)
+			}
+			if !tt.wantRateLimit && !tt.wantReadError && err.Error() != "download returned status 403" {
+				t.Errorf("DownloadAsset() error = %v, want generic forbidden status", err)
+			}
+			if got := len(tt.body) - reader.Len(); got != tt.wantRead {
+				t.Errorf("read %d error-body bytes, want %d", got, tt.wantRead)
+			}
+			if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+				t.Errorf("failed download created %s (stat err: %v)", dest, statErr)
+			}
+		})
+	}
+}
+
 func TestRelease_DisplayName(t *testing.T) {
 	t.Parallel()
 
@@ -367,6 +605,31 @@ func TestClient_DownloadAsset_Timeouts(t *testing.T) {
 		}
 		if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 			t.Errorf("partial download left at %s (stat err: %v)", dest, statErr)
+		}
+	})
+
+	t.Run("stalled error body aborts without creating a file", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			if _, err := w.Write([]byte("partial")); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			waitForClient(r)
+		}))
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL)
+		client.downloadStallTimeout = 100 * time.Millisecond
+
+		dest := filepath.Join(t.TempDir(), "asset")
+		_, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/stall"}, dest)
+		if !errors.Is(err, errDownloadStalled) {
+			t.Fatalf("DownloadAsset() error = %v, want download stalled", err)
+		}
+		if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+			t.Errorf("failed download created %s (stat err: %v)", dest, statErr)
 		}
 	})
 
@@ -556,6 +819,12 @@ func isRateLimitError(err error, target **RateLimitError) bool {
 		}
 	}
 	return false
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestClient_AuthorizationHeader(t *testing.T) {

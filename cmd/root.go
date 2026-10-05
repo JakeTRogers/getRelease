@@ -292,11 +292,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			if err != nil {
 				return err
 			}
-			if textOutput {
-				if _, err := fmt.Fprintf(out, "release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", rel.TagName, policy.ageDays(rel.PublishedAt), policy.days, fallback.TagName); err != nil {
-					return fmt.Errorf("writing cooldown fallback message: %w", err)
-				}
-			}
 			result.Cooldown = &cooldownReport{
 				Days:           policy.days,
 				SkippedTag:     rel.TagName,
@@ -316,7 +311,15 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		which = tag
 	}
 	if textOutput {
-		if _, err := fmt.Fprintf(out, "Fetching %s release for %s/%s...\n  Release: %s (%s)\n\n", which, owner, repo, rel.DisplayName(), rel.TagName); err != nil {
+		if _, err := fmt.Fprintf(out, "Fetching %s release for %s/%s...\n", which, owner, repo); err != nil {
+			return fmt.Errorf("writing release heading: %w", err)
+		}
+		if cd := result.Cooldown; cd != nil {
+			if _, err := fmt.Fprintf(out, "  release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", cd.SkippedTag, cd.SkippedAgeDays, cd.Days, rel.TagName); err != nil {
+				return fmt.Errorf("writing cooldown fallback message: %w", err)
+			}
+		}
+		if _, err := fmt.Fprintf(out, "  Release: %s (%s)\n\n", rel.DisplayName(), rel.TagName); err != nil {
 			return fmt.Errorf("writing release heading: %w", err)
 		}
 	}

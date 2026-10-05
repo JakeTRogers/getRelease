@@ -285,8 +285,12 @@ func TestRunRootCooldownFallsBackToOlderRelease(t *testing.T) {
 	if err := runRoot(cmd, nil); err != nil {
 		t.Fatalf("runRoot() error: %v", err)
 	}
-	if !strings.Contains(out.String(), "release v1.4.0 is 2 day(s) old, cooldown is 10 days — falling back to v1.3.2") {
-		t.Fatalf("runRoot() output = %q, want cooldown fallback message", out.String())
+	// The fallback note belongs under the heading, before the chosen release.
+	wantHeading := "Fetching latest release for cli/tool...\n" +
+		"  release v1.4.0 is 2 day(s) old, cooldown is 10 days — falling back to v1.3.2\n" +
+		"  Release: v1.3.2 (v1.3.2)\n"
+	if !strings.HasPrefix(out.String(), wantHeading) {
+		t.Fatalf("runRoot() output = %q, want it to start with %q", out.String(), wantHeading)
 	}
 	if listCalls != 1 {
 		t.Fatalf("ListReleases calls = %d, want 1", listCalls)
