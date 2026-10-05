@@ -306,6 +306,87 @@ func TestClient_DownloadAsset(t *testing.T) {
 	})
 }
 
+func TestClient_DownloadAsset_Timeouts(t *testing.T) {
+	t.Parallel()
+
+	// waitForClient blocks a handler until the client gives up, bounded so a
+	// regression cannot hang the test server's Close.
+	waitForClient := func(r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	t.Run("slow but progressing download outlives the client timeout", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for range 10 {
+				if _, err := w.Write([]byte("chunk")); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+				time.Sleep(30 * time.Millisecond)
+			}
+		}))
+		defer srv.Close()
+
+		httpClient := srv.Client()
+		httpClient.Timeout = 100 * time.Millisecond
+		client := NewClientWithHTTP(httpClient, srv.URL)
+		client.downloadStallTimeout = time.Second
+
+		dest := filepath.Join(t.TempDir(), "asset")
+		n, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/slow"}, dest)
+		if err != nil {
+			t.Fatalf("DownloadAsset() error: %v", err)
+		}
+		if n != 50 {
+			t.Errorf("DownloadAsset() wrote %d bytes, want 50", n)
+		}
+	})
+
+	t.Run("stalled body aborts and removes the partial file", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("partial")); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			waitForClient(r)
+		}))
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL)
+		client.downloadStallTimeout = 100 * time.Millisecond
+
+		dest := filepath.Join(t.TempDir(), "asset")
+		_, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/stall"}, dest)
+		if err == nil || !strings.Contains(err.Error(), "download stalled") {
+			t.Fatalf("DownloadAsset() error = %v, want download stalled", err)
+		}
+		if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+			t.Errorf("partial download left at %s (stat err: %v)", dest, statErr)
+		}
+	})
+
+	t.Run("stall before response headers aborts", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			waitForClient(r)
+		}))
+		defer srv.Close()
+
+		client := NewClientWithHTTP(srv.Client(), srv.URL)
+		client.downloadStallTimeout = 100 * time.Millisecond
+
+		_, err := client.DownloadAsset(Asset{DownloadURL: srv.URL + "/hang"}, filepath.Join(t.TempDir(), "asset"))
+		if err == nil || !strings.Contains(err.Error(), "download stalled") {
+			t.Fatalf("DownloadAsset() error = %v, want download stalled", err)
+		}
+	})
+}
+
 func TestClient_GetReleaseByTag_NotFound(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
