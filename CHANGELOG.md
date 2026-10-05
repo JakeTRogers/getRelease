@@ -1,3 +1,28 @@
+## v1.5.0 (2026-10-04)
+
+### Feat
+
+- **history**: show and sort by the last update in history list
+- **github**: accept scp-like SSH repository URLs
+- **github**: retry tags with or without a leading v
+- **list**: mark prereleases and drafts in the release table
+- **root**: show help when run without arguments and add --version
+
+### Fix
+
+- **cmd**: run $VISUAL/$EDITOR with arguments in edit commands
+- **platform**: accept common OS and architecture aliases
+- **config**: print map and list values from config get as YAML
+- **github**: explain why a repository or release was not found
+- **github**: page through releases when the limit exceeds 100
+- **root**: show warnings by default
+- **cmd**: share one work directory layout between install and upgrade
+- **upgrade**: name packages owner/repo in upgrade output
+- **cmd**: accept --owner/--repo as the target for upgrade, pin, and unpin
+- **cmd**: exit with status 2 on cancelled prompts in every command
+- **cmd**: unify confirmation prompts for config reset and history clear
+- **cmd**: validate --format consistently and emit [] for empty JSON
+
 ## v1.4.3 (2026-10-04)
 
 ### Fix
