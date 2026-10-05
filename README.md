@@ -108,7 +108,7 @@ Inspect tracked installs:
 getRelease history list
 ```
 
-`history list` shows the current pin policy in the `PIN` column using `-`, `patch`, `minor`, or `major`.
+`history list` shows the current pin policy in the `PIN` column using `-`, `patch`, `minor`, or `major`. `INSTALLED` is when a package was first installed and `UPDATED` is when its record last changed, by a reinstall, upgrade, or pin change; `--sort updated` orders by the latter.
 
 Prune history records for binaries that are no longer installed:
 
@@ -252,6 +252,7 @@ getRelease completion powershell
 - Asset selection is automatic when there is exactly one match or one clearly preferred match for the current platform.
 - When an archive contains multiple binaries, the CLI can install all of them or prompt you to choose one.
 - Install history is what powers `upgrade`, `pin`, `unpin`, owner and repo completion, and installed-target suggestions.
+- The exit status is 0 on success, 1 on error, and 2 when an interactive prompt is cancelled (for example with Ctrl-C).
 
 ## Development
 

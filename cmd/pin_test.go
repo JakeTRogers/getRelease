@@ -130,6 +130,86 @@ func TestRunPinAllowsNonSemverCurrentTagForPatch(t *testing.T) {
 	}
 }
 
+func TestValidateTargetArgsMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		args        []string
+		owner, repo string
+		wantErr     string
+	}{
+		{name: "missing target", wantErr: "specify one installed target as a binary name or owner/repo, or with --owner and --repo"},
+		{name: "owner alone", owner: "cli", wantErr: "--owner and --repo must be used together"},
+		{name: "both forms", args: []string{"tool"}, owner: "cli", repo: "tool", wantErr: "not both"},
+		{name: "target", args: []string{"cli/tool"}},
+		{name: "owner and repo", owner: "cli", repo: "tool"},
+	}
+	for _, tt := range tests {
+		cmd := &cobra.Command{}
+		addPinTestFlags(cmd)
+		if tt.owner != "" {
+			if err := cmd.Flags().Set("owner", tt.owner); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tt.repo != "" {
+			if err := cmd.Flags().Set("repo", tt.repo); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := validateTargetArgs(cmd, tt.args)
+		if tt.wantErr == "" {
+			if err != nil {
+				t.Errorf("%s: validateTargetArgs() error = %v, want nil", tt.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: validateTargetArgs() error = %v, want %q", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+func TestRunPinAndUnpinByOwnerAndRepo(t *testing.T) {
+	useTestCommandDeps(t, nil)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
+	installPath := filepath.Join(t.TempDir(), "bin", "tool")
+	writeExecutableFile(t, installPath)
+	writeHistoryRecords(t, []history.Record{newHistoryRecord("rec1", "cli", "tool", "v1.2.3", "tool", "tool", installPath)})
+
+	pin := &cobra.Command{}
+	addPinTestFlags(pin)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "level": "minor"} {
+		if err := pin.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	pin.SetOut(&bytes.Buffer{})
+	if err := runPin(pin, nil); err != nil {
+		t.Fatalf("runPin() with --owner/--repo error: %v", err)
+	}
+	if records := loadHistoryRecords(t); records[0].PinLevel != history.PinMinor {
+		t.Fatalf("pin level = %q, want minor", records[0].PinLevel)
+	}
+
+	unpin := &cobra.Command{}
+	addUnpinTestFlags(unpin)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool"} {
+		if err := unpin.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	unpin.SetOut(&bytes.Buffer{})
+	if err := runUnpin(unpin, nil); err != nil {
+		t.Fatalf("runUnpin() with --owner/--repo error: %v", err)
+	}
+	if records := loadHistoryRecords(t); records[0].PinLevel != history.PinNone {
+		t.Fatalf("pin level = %q, want none", records[0].PinLevel)
+	}
+}
+
 func TestRunPinRejectsNonSemverCurrentTagForMinor(t *testing.T) {
 	useTestCommandDeps(t, nil)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))

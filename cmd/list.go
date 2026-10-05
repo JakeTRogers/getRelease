@@ -6,6 +6,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/JakeTRogers/getRelease/internal/github"
 )
 
 var listCmd = &cobra.Command{
@@ -23,7 +25,7 @@ for a specific release instead.`,
 func init() {
 	listCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	listCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
-	listCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
+	listCmd.Flags().StringP("url", "u", "", "GitHub repository URL (https or git@host:owner/repo)")
 	listCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	listCmd.Flags().StringP("tag", "t", "", "list assets for this release tag instead of listing releases")
 	listCmd.Flags().IntP("limit", "l", 30, "number of releases to show")
@@ -46,6 +48,10 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 	tag, _ := cmd.Flags().GetString("tag")
 	format, _ := cmd.Flags().GetString("format")
+	format, err = normalizeOutputFormat(format)
+	if err != nil {
+		return err
+	}
 
 	client, err := newGitHubClient(host)
 	if err != nil {
@@ -63,7 +69,14 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 
 	releases, err := client.ListReleases(owner, repo, limit)
 	if err != nil {
-		return fmt.Errorf("listing releases: %w", err)
+		return err
+	}
+
+	if format == "json" {
+		if releases == nil {
+			releases = []github.Release{}
+		}
+		return outputJSON(cmd, releases)
 	}
 
 	if len(releases) == 0 {
@@ -73,15 +86,11 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 		return nil
 	}
 
-	if format == "json" {
-		return outputJSON(cmd, releases)
-	}
-
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Releases for %s/%s:\n\n", owner, repo); err != nil {
 		return fmt.Errorf("writing releases heading: %w", err)
 	}
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "TAG\tNAME\tDATE\tASSETS"); err != nil {
+	if _, err := fmt.Fprintln(w, "TAG\tNAME\tTYPE\tDATE\tASSETS"); err != nil {
 		return fmt.Errorf("writing releases table header: %w", err)
 	}
 	for _, r := range releases {
@@ -89,8 +98,11 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 		if name == r.TagName {
 			name = ""
 		}
-		date := r.PublishedAt.Format("2006-01-02")
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", r.TagName, name, date, len(r.Assets)); err != nil {
+		date := "-" // drafts are unpublished
+		if !r.PublishedAt.IsZero() {
+			date = r.PublishedAt.Format("2006-01-02")
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", r.TagName, name, releaseType(r), date, len(r.Assets)); err != nil {
 			return fmt.Errorf("writing release row %s: %w", r.TagName, err)
 		}
 	}
@@ -103,10 +115,30 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 	return nil
 }
 
+// releaseType labels releases that `getRelease` does not install by default.
+func releaseType(r github.Release) string {
+	switch {
+	case r.Draft:
+		return "draft"
+	case r.Prerelease:
+		return "prerelease"
+	default:
+		return ""
+	}
+}
+
 func listAssets(cmd *cobra.Command, client releaseClient, host, owner, repo, tag, format string) error {
 	release, err := client.GetReleaseByTag(owner, repo, tag)
 	if err != nil {
-		return fmt.Errorf("fetching release %s: %w", tag, err)
+		return err
+	}
+
+	if format == "json" {
+		assets := release.Assets
+		if assets == nil {
+			assets = []github.Asset{}
+		}
+		return outputJSON(cmd, assets)
 	}
 
 	if len(release.Assets) == 0 {
@@ -114,10 +146,6 @@ func listAssets(cmd *cobra.Command, client releaseClient, host, owner, repo, tag
 			return fmt.Errorf("writing empty assets message: %w", err)
 		}
 		return nil
-	}
-
-	if format == "json" {
-		return outputJSON(cmd, release.Assets)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Assets for %s/%s %s:\n\n", owner, repo, release.DisplayName()); err != nil {

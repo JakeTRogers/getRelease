@@ -36,7 +36,9 @@ func completeInstalledUpgradeTargets(cmd *cobra.Command, args []string, toComple
 	}
 
 	upgradeAll, _ := cmd.Flags().GetBool("all")
-	if upgradeAll {
+	ownerFlag, _ := cmd.Flags().GetString("owner")
+	repoFlag, _ := cmd.Flags().GetString("repo")
+	if upgradeAll || ownerFlag != "" || repoFlag != "" {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
@@ -249,6 +251,7 @@ func completeHistoryListSortValues(_ *cobra.Command, _ []string, toComplete stri
 		{value: historyListSortOwner, description: "sort by repository owner"},
 		{value: historyListSortRepo, description: "sort by repository name"},
 		{value: historyListSortInstalled, description: "sort by installed date, oldest first"},
+		{value: historyListSortUpdated, description: "sort by last update, oldest first"},
 	}
 
 	completions := make([]cobra.Completion, 0, len(options))
@@ -268,6 +271,26 @@ func completeOutputFormatValues(_ *cobra.Command, _ []string, toComplete string)
 		description string
 	}{
 		{value: "text", description: "human-readable output"},
+		{value: "json", description: "machine-readable JSON output"},
+	}
+
+	completions := make([]cobra.Completion, 0, len(options))
+	for _, option := range options {
+		if !matchesCompletion(option.value, toComplete) {
+			continue
+		}
+		completions = append(completions, cobra.CompletionWithDesc(option.value, option.description))
+	}
+
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeConfigShowFormatValues(_ *cobra.Command, _ []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	options := []struct {
+		value       string
+		description string
+	}{
+		{value: "yaml", description: "YAML output"},
 		{value: "json", description: "machine-readable JSON output"},
 	}
 

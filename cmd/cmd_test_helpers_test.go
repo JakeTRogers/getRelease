@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -211,4 +213,53 @@ func writeExecutableFile(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write executable file: %v", err)
 	}
+}
+
+// setCommandFlag sets a flag on a shared command and restores its default when
+// the test ends, so package-level commands do not leak state between tests.
+func setCommandFlag(t *testing.T, cmd *cobra.Command, name, value string) {
+	t.Helper()
+	flag := cmd.Flags().Lookup(name)
+	if flag == nil {
+		t.Fatalf("%s has no flag %q", cmd.CommandPath(), name)
+	}
+	if err := flag.Value.Set(value); err != nil {
+		t.Fatalf("set %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if err := flag.Value.Set(flag.DefValue); err != nil {
+			t.Errorf("reset %s: %v", name, err)
+		}
+		flag.Changed = false
+	})
+}
+
+// writeTarGz writes a .tar.gz archive at destPath containing files, each with
+// mode 0755, and returns its size.
+func writeTarGz(t *testing.T, destPath string, files map[string][]byte) int64 {
+	t.Helper()
+	f, err := os.Create(destPath)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for name, content := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))}); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatalf("write tar entry: %v", err)
+		}
+	}
+	for _, closer := range []interface{ Close() error }{tw, gz, f} {
+		if err := closer.Close(); err != nil {
+			t.Fatalf("close archive: %v", err)
+		}
+	}
+	info, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
 }

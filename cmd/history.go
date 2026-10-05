@@ -2,19 +2,19 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/JakeTRogers/getRelease/internal/config"
 	"github.com/JakeTRogers/getRelease/internal/history"
-	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 var historyCmd = &cobra.Command{
@@ -28,6 +28,7 @@ const (
 	historyListSortRepo      = "repo"
 	historyListSortBinary    = "binary"
 	historyListSortInstalled = "installed"
+	historyListSortUpdated   = "updated"
 )
 
 var historyListCmd = &cobra.Command{
@@ -45,6 +46,10 @@ var historyListCmd = &cobra.Command{
 		}
 
 		format, _ := cmd.Flags().GetString("format")
+		format, err = normalizeOutputFormat(format)
+		if err != nil {
+			return err
+		}
 		sortValue, _ := cmd.Flags().GetString("sort")
 		sortBy, err := normalizeHistoryListSort(sortValue)
 		if err != nil {
@@ -52,7 +57,7 @@ var historyListCmd = &cobra.Command{
 		}
 
 		records := store.Records()
-		if len(records) == 0 {
+		if len(records) == 0 && format == "text" {
 			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "No history records found."); err != nil {
 				return fmt.Errorf("writing empty history message: %w", err)
 			}
@@ -67,7 +72,7 @@ var historyListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "ID\tOWNER\tREPO\tTAG\tPIN\tBINARIES\tINSTALLED"); err != nil {
+		if _, err := fmt.Fprintln(w, "ID\tOWNER\tREPO\tTAG\tPIN\tBINARIES\tINSTALLED\tUPDATED"); err != nil {
 			return fmt.Errorf("writing history header: %w", err)
 		}
 		for _, r := range records {
@@ -79,12 +84,8 @@ var historyListCmd = &cobra.Command{
 			if r.PinLevel != history.PinNone {
 				pin = string(r.PinLevel)
 			}
-			installed := ""
-			if !r.InstalledAt.IsZero() {
-				installed = r.InstalledAt.Format("2006-01-02")
-			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.ID, r.Owner, r.Repo, r.Tag, pin, strings.Join(bins, ","), installed); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.ID, r.Owner, r.Repo, r.Tag, pin, strings.Join(bins, ","), historyDate(r.InstalledAt), historyDate(r.UpdatedAt)); err != nil {
 				return fmt.Errorf("writing history record %s: %w", r.ID, err)
 			}
 		}
@@ -95,10 +96,10 @@ var historyListCmd = &cobra.Command{
 func normalizeHistoryListSort(value string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
-	case historyListSortOwner, historyListSortRepo, historyListSortBinary, historyListSortInstalled:
+	case historyListSortOwner, historyListSortRepo, historyListSortBinary, historyListSortInstalled, historyListSortUpdated:
 		return normalized, nil
 	default:
-		return "", fmt.Errorf("invalid sort value %q: must be one of owner, repo, binary, installed", value)
+		return "", fmt.Errorf("invalid sort value %q: must be one of owner, repo, binary, installed, updated", value)
 	}
 }
 
@@ -114,6 +115,8 @@ func sortHistoryRecords(records []history.Record, sortBy string) []history.Recor
 		compare = compareHistoryRecordsByRepo
 	case historyListSortInstalled:
 		compare = compareHistoryRecordsByInstalledAt
+	case historyListSortUpdated:
+		compare = compareHistoryRecordsByUpdatedAt
 	}
 
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -185,6 +188,21 @@ func compareHistoryRecordsByInstalledAt(left, right history.Record) int {
 		return result
 	}
 	return compareHistoryRecordID(left, right)
+}
+
+func compareHistoryRecordsByUpdatedAt(left, right history.Record) int {
+	if result := left.UpdatedAt.Compare(right.UpdatedAt); result != 0 {
+		return result
+	}
+	return compareHistoryRecordsByInstalledAt(left, right)
+}
+
+// historyDate formats a history timestamp as a date, or "" when unset.
+func historyDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02")
 }
 
 func compareHistoryRecordOwner(left, right history.Record) int {
@@ -344,17 +362,15 @@ var historyClearCmd = &cobra.Command{
 			return nil
 		}
 
-		if !force {
-			ok, err := selector.Confirm(fmt.Sprintf("Clear all %d history records?", n), false)
-			if err != nil {
-				return err
+		ok, err := confirmDestructive(fmt.Sprintf("Clear all %d history records?", n), force)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted."); err != nil {
+				return fmt.Errorf("writing clear abort message: %w", err)
 			}
-			if !ok {
-				if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted."); err != nil {
-					return fmt.Errorf("writing clear abort message: %w", err)
-				}
-				return nil
-			}
+			return nil
 		}
 
 		// Create an empty store and save it (truncates history)
@@ -448,38 +464,21 @@ var historyPruneCmd = &cobra.Command{
 
 var historyEditCmd = &cobra.Command{
 	Use:          "edit",
-	Short:        "Open history file in $EDITOR",
+	Short:        "Open history file in $VISUAL or $EDITOR",
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = "vi"
-		}
 		path, err := config.HistoryFilePath()
 		if err != nil {
 			return fmt.Errorf("resolve history path: %w", err)
 		}
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create history dir: %w", err)
+		// Create a valid empty history rather than an empty file, which
+		// would fail to load if the editor exits without saving.
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			if err := history.NewStore(path).Save(); err != nil {
+				return fmt.Errorf("create history file: %w", err)
+			}
 		}
-		// Ensure the file exists
-		f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o644)
-		if err != nil {
-			return fmt.Errorf("ensure history file: %w", err)
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("closing history file: %w", err)
-		}
-
-		e := exec.Command(editor, path)
-		e.Stdin = os.Stdin
-		e.Stdout = os.Stdout
-		e.Stderr = os.Stderr
-		if err := e.Run(); err != nil {
-			return fmt.Errorf("running editor: %w", err)
-		}
-		return nil
+		return openInEditor(path)
 	},
 }
 
@@ -502,7 +501,7 @@ var historyPathCmd = &cobra.Command{
 func init() {
 	historyCmd.AddCommand(historyListCmd, historyRemoveCmd, historyClearCmd, historyPruneCmd, historyEditCmd, historyPathCmd)
 	historyListCmd.Flags().String("format", "text", "output format: text, json")
-	historyListCmd.Flags().String("sort", historyListSortBinary, "sort by: owner, repo, binary, installed")
+	historyListCmd.Flags().String("sort", historyListSortBinary, "sort by: owner, repo, binary, installed, updated")
 	mustRegisterFlagCompletion(historyListCmd, "sort", completeHistoryListSortValues)
 	mustRegisterFlagCompletion(historyListCmd, "format", completeOutputFormatValues)
 	historyClearCmd.Flags().Bool("force", false, "skip confirmation prompt")

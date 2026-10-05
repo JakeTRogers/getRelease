@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,15 +16,18 @@ import (
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
 	"github.com/JakeTRogers/getRelease/internal/platform"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 	"github.com/JakeTRogers/getRelease/internal/semver"
 )
 
 var upgradeCmd = &cobra.Command{
-	Use:   "upgrade <target> | --all",
+	Use:   "upgrade [<target> | --owner <owner> --repo <repo> | --all]",
 	Short: "Upgrade a previously installed binary",
-	Long:  `Upgrade a previously installed binary using install history, or use --all to upgrade every installed package still present on disk.`,
-	Args:  validateUpgradeArgs,
-	RunE:  runUpgrade,
+	Long: `Upgrade a previously installed binary using install history, or use --all to upgrade every installed package still present on disk.
+
+The target is an installed binary name or owner/repo; --owner and --repo together select it instead.`,
+	Args: validateUpgradeArgs,
+	RunE: runUpgrade,
 }
 
 type upgradeMapping struct {
@@ -36,8 +38,8 @@ type upgradeMapping struct {
 }
 
 func init() {
-	upgradeCmd.Flags().StringP("owner", "o", "", "GitHub owner/org (skip history lookup)")
-	upgradeCmd.Flags().StringP("repo", "r", "", "GitHub repository (skip history lookup)")
+	upgradeCmd.Flags().StringP("owner", "o", "", ownerTargetFlagUsage)
+	upgradeCmd.Flags().StringP("repo", "r", "", repoTargetFlagUsage)
 	upgradeCmd.Flags().Bool("all", false, "upgrade all installed packages still present on disk")
 	upgradeCmd.Flags().Bool("dry-run", false, "show what would be upgraded")
 	upgradeCmd.Flags().Int("cooldown", 0, "minimum release age in days (overrides config; 0 disables)")
@@ -61,7 +63,42 @@ func validateUpgradeArgs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return cobra.ExactArgs(1)(cmd, args)
+	return validateTargetArgs(cmd, args)
+}
+
+const (
+	ownerTargetFlagUsage = "GitHub owner/org of the installed target (with --repo, instead of <target>)"
+	repoTargetFlagUsage  = "GitHub repository of the installed target (with --owner, instead of <target>)"
+)
+
+// validateTargetArgs requires an installed target selected by exactly one of:
+// a <target> argument (binary name or owner/repo), or --owner and --repo.
+func validateTargetArgs(cmd *cobra.Command, args []string) error {
+	ownerFlag, _ := cmd.Flags().GetString("owner")
+	repoFlag, _ := cmd.Flags().GetString("repo")
+
+	if ownerFlag == "" && repoFlag == "" {
+		if len(args) != 1 {
+			return fmt.Errorf("specify one installed target as a binary name or owner/repo, or with --owner and --repo (got %d arguments)", len(args))
+		}
+		return nil
+	}
+	if ownerFlag == "" || repoFlag == "" {
+		return errors.New("--owner and --repo must be used together")
+	}
+	if len(args) != 0 {
+		return errors.New("specify the target either as an argument or with --owner and --repo, not both")
+	}
+	return nil
+}
+
+// targetArg returns the positional target, or "" when --owner and --repo
+// select it instead.
+func targetArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
 }
 
 func runUpgrade(cmd *cobra.Command, args []string) error {
@@ -91,7 +128,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		return runUpgradeAll(cmd, store, cfg, dryRun, cds)
 	}
 
-	rec, err := resolveUpgradeRecord(store, args[0], ownerFlag, repoFlag)
+	rec, err := resolveUpgradeRecord(store, targetArg(args), ownerFlag, repoFlag)
 	if err != nil {
 		return err
 	}
@@ -117,11 +154,16 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	for i := range records {
 		rec := records[i]
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s : %s\n", rec.Owner, rec.Repo, githubRepoReleasesURL(rec.Host, rec.Owner, rec.Repo)); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s\n", rec.Owner, rec.Repo); err != nil {
 			return fmt.Errorf("writing upgrade header for %s/%s: %w", rec.Owner, rec.Repo, err)
 		}
 
 		upgraded, err := upgradeRecord(cmd, store, cfg, &rec, dryRun, cds)
+		if errors.Is(err, selector.ErrCancelled) {
+			// The user cancelled a prompt: stop rather than move on to the
+			// remaining packages.
+			return err
+		}
 		if err != nil {
 			failed++
 			failures = append(failures, fmt.Sprintf("%s/%s: %v", rec.Owner, rec.Repo, err))
@@ -262,7 +304,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	// Dry-run: show what would happen
 	if dryRun {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Would upgrade %s from %s to %s\n", githubRepoReleasesURL(rec.Host, owner, repo), rec.Tag, release.TagName); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Would upgrade %s/%s from %s to %s\n", owner, repo, rec.Tag, release.TagName); err != nil {
 			return false, fmt.Errorf("writing dry-run upgrade summary: %w", err)
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Asset: %s (%s)\n", chosen.Name, formatBytes(chosen.Size)); err != nil {
@@ -271,14 +313,16 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Download URL: %s\n", chosen.DownloadURL); err != nil {
 			return false, fmt.Errorf("writing dry-run download URL: %w", err)
 		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Review the release notes: %s\n", githubReleasePageURL(rec.Host, owner, repo, release)); err != nil {
+			return false, fmt.Errorf("writing dry-run release notes link: %w", err)
+		}
 		return true, nil
 	}
 
 	// Prepare download workspace
-	ts := time.Now().Format("20060102T150405")
-	workDir := filepath.Join(cfg.DownloadDir, fmt.Sprintf("%s-%s", repo, ts))
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return false, fmt.Errorf("create download dir %s: %w", workDir, err)
+	workDir, err := newWorkDir(cfg.DownloadDir, repo)
+	if err != nil {
+		return false, err
 	}
 
 	destPath := filepath.Join(workDir, chosen.Name)
@@ -293,7 +337,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	var extractedDir string
 	if archive.IsArchive(chosen.Name) {
-		extractedDir = filepath.Join(workDir, "extracted")
+		extractedDir = filepath.Join(workDir, extractedDirName)
 		if err := archive.Extract(destPath, extractedDir); err != nil {
 			return false, fmt.Errorf("extracting archive: %w", err)
 		}
@@ -356,8 +400,11 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		return false, fmt.Errorf("saving history: %w", err)
 	}
 
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s to %s\n", githubRepoReleasesURL(rec.Host, owner, repo), release.TagName); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s/%s to %s\n", owner, repo, release.TagName); err != nil {
 		return false, fmt.Errorf("writing upgrade completion: %w", err)
+	}
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Review the release notes: %s\n", githubReleasePageURL(rec.Host, owner, repo, release)); err != nil {
+		return false, fmt.Errorf("writing release notes link: %w", err)
 	}
 	return true, nil
 }
@@ -370,7 +417,7 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 	case history.PinNone:
 		release, err := client.GetLatestRelease(owner, repo)
 		if err != nil {
-			return nil, false, fmt.Errorf("fetching latest release for %s/%s: %w", owner, repo, err)
+			return nil, false, err
 		}
 
 		if release.TagName == rec.Tag {
@@ -391,7 +438,7 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 		if policy.enabled() && !policy.releaseEligible(release) {
 			releases, err := client.ListReleases(owner, repo, 100)
 			if err != nil {
-				return nil, false, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+				return nil, false, err
 			}
 			fallback, err := findCooldownFallback(releases, owner, repo, policy)
 			if err != nil {
@@ -433,7 +480,7 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 
 		releases, err := client.ListReleases(owner, repo, 100)
 		if err != nil {
-			return nil, false, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+			return nil, false, err
 		}
 
 		bestIndex := -1

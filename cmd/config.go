@@ -1,12 +1,15 @@
 package cmd
 
 import (
-	"bufio"
+	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -16,6 +19,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	internalconfig "github.com/JakeTRogers/getRelease/internal/config"
+	"github.com/JakeTRogers/getRelease/internal/platform"
 )
 
 // configCmd is the parent for configuration management subcommands.
@@ -36,7 +40,7 @@ var configKeys = []struct {
 	{value: "downloadDir", description: "directory for downloaded release assets"},
 	{value: "installDir", description: "directory for installed binaries"},
 	{value: "installCommand", description: "command template for installing binaries"},
-	{value: "autoExtract", description: "automatically extract downloaded archives"},
+	{value: "autoExtract", description: "extract archives fetched with --download-only (installs and upgrades always extract)"},
 	{value: "token", description: "GitHub API token (prefer GETRELEASE_TOKEN/GH_TOKEN/GITHUB_TOKEN env vars over storing here)"},
 	{value: "cooldown", description: "minimum release age in days before install (0 disables)"},
 	{value: "trustedOwners", description: "GitHub owners exempt from cooldown (case-insensitive)"},
@@ -51,13 +55,17 @@ var configShowCmd = &cobra.Command{
 	Short: "Display effective configuration",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		format, _ := cmd.Flags().GetString("format")
+		format, err := normalizeConfigShowFormat(format)
+		if err != nil {
+			return err
+		}
 
 		settings := cfgViper.AllSettings()
 		if tok, ok := settings["token"].(string); ok && tok != "" {
 			settings["token"] = "<redacted>"
 		}
 
-		switch strings.ToLower(format) {
+		switch format {
 		case "json":
 			out, err := json.MarshalIndent(settings, "", "  ")
 			if err != nil {
@@ -95,6 +103,18 @@ var configGetCmd = &cobra.Command{
 				val = "<redacted>"
 			}
 		}
+		// Maps and lists print as YAML, like `config show`, rather than in
+		// Go's map[...] and [...] syntax.
+		if kind := reflect.ValueOf(val).Kind(); kind == reflect.Map || kind == reflect.Slice {
+			out, err := yaml.Marshal(val)
+			if err != nil {
+				return fmt.Errorf("marshaling config value to yaml: %w", err)
+			}
+			if _, err := cmd.OutOrStdout().Write(out); err != nil {
+				return fmt.Errorf("writing config value: %w", err)
+			}
+			return nil
+		}
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), val); err != nil {
 			return fmt.Errorf("writing config value: %w", err)
 		}
@@ -114,13 +134,28 @@ var configSetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		displayValue := value
+		// Store Go's names for OS and architecture so asset matching
+		// recognizes aliases such as x86_64 or macos.
+		var normalized string
+		switch key {
+		case "assetPreferences.os":
+			normalized = platform.NormalizeOS(value)
+		case "assetPreferences.arch":
+			normalized = platform.NormalizeArch(value)
+		}
+		if normalized != "" {
+			parsedValue = normalized
+			if normalized != value {
+				displayValue = fmt.Sprintf("%s (normalized from %q)", normalized, value)
+			}
+		}
 
 		cfgViper.Set(key, parsedValue)
 		if err := internalconfig.SetValue(key, parsedValue); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
 
-		displayValue := value
 		if key == "token" && value != "" {
 			displayValue = "<redacted>"
 		}
@@ -129,6 +164,19 @@ var configSetCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// normalizeConfigShowFormat validates the config show format. "text" is
+// accepted as an alias for yaml, the format it has always printed.
+func normalizeConfigShowFormat(format string) (string, error) {
+	switch strings.ToLower(format) {
+	case "", "yaml", "text":
+		return "yaml", nil
+	case "json":
+		return "json", nil
+	default:
+		return "", fmt.Errorf("unsupported output format %q: use yaml or json", format)
+	}
 }
 
 // canonicalConfigKey maps a key typed in any case (Viper ignores case) to its
@@ -208,13 +256,8 @@ func parseStringSliceValue(raw string) ([]string, error) {
 
 var configEditCmd = &cobra.Command{
 	Use:   "edit",
-	Short: "Open config file in $EDITOR",
+	Short: "Open config file in $VISUAL or $EDITOR",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = "vi"
-		}
-
 		cfgPath, err := internalconfig.ConfigFilePath()
 		if err != nil {
 			return fmt.Errorf("resolving config file path: %w", err)
@@ -230,17 +273,34 @@ var configEditCmd = &cobra.Command{
 			}
 		}
 
-		editorCmd := exec.Command(editor, cfgPath)
-		editorCmd.Stdin = os.Stdin
-		editorCmd.Stdout = os.Stdout
-		editorCmd.Stderr = os.Stderr
-
-		if err := editorCmd.Run(); err != nil {
-			return fmt.Errorf("running editor: %w", err)
-		}
-
-		return nil
+		return openInEditor(cfgPath)
 	},
+}
+
+// openInEditor opens path in the user's editor: $VISUAL, then $EDITOR, then
+// vi (notepad on Windows). Editor arguments use shell quoting on Unix and
+// native command-line quoting on Windows, as in EDITOR="code --wait".
+func openInEditor(path string) error {
+	editor := strings.TrimSpace(cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR")))
+	if editor == "" {
+		editor = "vi"
+		if runtime.GOOS == "windows" {
+			editor = "notepad"
+		}
+	}
+
+	editorCmd, err := editorCommand(editor, path)
+	if err != nil {
+		return fmt.Errorf("preparing editor %q: %w", editor, err)
+	}
+	editorCmd.Stdin = os.Stdin
+	editorCmd.Stdout = os.Stdout
+	editorCmd.Stderr = os.Stderr
+
+	if err := editorCmd.Run(); err != nil {
+		return fmt.Errorf("running editor %q: %w", editor, err)
+	}
+	return nil
 }
 
 var configResetCmd = &cobra.Command{
@@ -276,28 +336,26 @@ var configResetCmd = &cobra.Command{
 			return fmt.Errorf("resolving config file path: %w", err)
 		}
 
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to delete the config file at %s? [y/N]: ", cfgPath); err != nil {
-			return fmt.Errorf("writing reset prompt: %w", err)
+		if _, err := os.Stat(cfgPath); errors.Is(err, fs.ErrNotExist) {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Config file does not exist: %s\n", cfgPath); err != nil {
+				return fmt.Errorf("writing missing config message: %w", err)
+			}
+			return nil
 		}
-		reader := bufio.NewReader(os.Stdin)
-		resp, _ := reader.ReadString('\n')
-		resp = strings.TrimSpace(strings.ToLower(resp))
-		proceed := resp == "y" || resp == "yes"
 
-		if !proceed {
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted"); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		ok, err := confirmDestructive(fmt.Sprintf("Delete the config file at %s?", cfgPath), force)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted."); err != nil {
 				return fmt.Errorf("writing reset abort message: %w", err)
 			}
 			return nil
 		}
 
 		if err := os.Remove(cfgPath); err != nil {
-			if os.IsNotExist(err) {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Config file does not exist: %s\n", cfgPath); err != nil {
-					return fmt.Errorf("writing missing config message: %w", err)
-				}
-				return nil
-			}
 			return fmt.Errorf("removing config file: %w", err)
 		}
 
@@ -324,12 +382,13 @@ var configPathCmd = &cobra.Command{
 }
 
 func init() {
-	configShowCmd.Flags().String("format", "text", "output format: text, json")
-	mustRegisterFlagCompletion(configShowCmd, "format", completeOutputFormatValues)
+	configShowCmd.Flags().String("format", "yaml", "output format: yaml, json")
+	mustRegisterFlagCompletion(configShowCmd, "format", completeConfigShowFormatValues)
 
 	configGetCmd.ValidArgsFunction = completeConfigKeyArg
 	configSetCmd.ValidArgsFunction = completeConfigKeyArg
 	configResetCmd.ValidArgsFunction = completeConfigKeyArg
+	configResetCmd.Flags().Bool("force", false, "skip confirmation prompt when deleting the config file")
 
 	configCmd.AddCommand(configShowCmd)
 	configCmd.AddCommand(configGetCmd)

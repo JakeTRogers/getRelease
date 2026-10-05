@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -433,6 +437,150 @@ func TestClient_DownloadAsset_ErrorBody(t *testing.T) {
 	}
 }
 
+func TestClient_NotFoundExplanations(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	encode := func(w http.ResponseWriter, v any) {
+		if err := json.NewEncoder(w).Encode(v); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}
+	// o/missing does not exist, so every path under it 404s.
+	mux.HandleFunc("/repos/o/empty/releases", func(w http.ResponseWriter, _ *http.Request) {
+		encode(w, []Release{})
+	})
+	mux.HandleFunc("/repos/o/pre/releases", func(w http.ResponseWriter, _ *http.Request) {
+		encode(w, []Release{{TagName: "v2.0.0-draft", Draft: true}, {TagName: "v2.0.0-rc.1", Prerelease: true}})
+	})
+	mux.HandleFunc("/repos/o/real/releases", func(w http.ResponseWriter, _ *http.Request) {
+		encode(w, []Release{{TagName: "v0.24.0"}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	anonymous := NewClientWithHTTP(srv.Client(), srv.URL)
+	authenticated := NewClientWithHTTP(srv.Client(), srv.URL).WithToken("token")
+
+	tests := []struct {
+		name         string
+		call         func() error
+		want         string
+		wantNotFound bool
+	}{
+		{
+			name: "missing repository, anonymous",
+			call: func() error { _, err := anonymous.GetLatestRelease("o", "missing"); return err },
+			want: "repository o/missing not found; if it is private, set GETRELEASE_TOKEN", wantNotFound: true,
+		},
+		{
+			name: "missing repository, authenticated",
+			call: func() error { _, err := authenticated.GetLatestRelease("o", "missing"); return err },
+			want: "repository o/missing not found, or the configured token cannot access it", wantNotFound: true,
+		},
+		{
+			name: "no releases",
+			call: func() error { _, err := anonymous.GetLatestRelease("o", "empty"); return err },
+			want: "o/empty has no published releases",
+		},
+		{
+			name: "only prereleases",
+			call: func() error { _, err := anonymous.GetLatestRelease("o", "pre"); return err },
+			want: "o/pre has no stable release, only prereleases (newest: v2.0.0-rc.1)",
+		},
+		{
+			name: "missing tag",
+			call: func() error { _, err := anonymous.GetReleaseByTag("o", "real", "0.24.0"); return err },
+			want: "release 0.24.0 in o/real not found", wantNotFound: true,
+		},
+		{
+			name: "tag in missing repository",
+			call: func() error { _, err := anonymous.GetReleaseByTag("o", "missing", "v1.0.0"); return err },
+			want: "repository o/missing not found", wantNotFound: true,
+		},
+		{
+			name: "list missing repository",
+			call: func() error { _, err := anonymous.ListReleases("o", "missing", 30); return err },
+			want: "repository o/missing not found", wantNotFound: true,
+		},
+	}
+	for _, tt := range tests {
+		err := tt.call()
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: error = %v, want it to contain %q", tt.name, err, tt.want)
+			continue
+		}
+		if strings.Contains(err.Error(), "/repos/") {
+			t.Errorf("%s: error = %q, want no raw API path", tt.name, err)
+		}
+		var nf *NotFoundError
+		if got := errors.As(err, &nf); got != tt.wantNotFound {
+			t.Errorf("%s: errors.As(*NotFoundError) = %v, want %v", tt.name, got, tt.wantNotFound)
+		}
+	}
+}
+
+func TestAlternateTag(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"v1.2.3":     "1.2.3",
+		"V1.2.3":     "1.2.3",
+		"1.2.3":      "v1.2.3",
+		"2026-09-21": "v2026-09-21",
+		"nightly":    "",
+		"v":          "",
+		"version-1":  "",
+		"":           "",
+	}
+	for tag, want := range tests {
+		if got := alternateTag(tag); got != want {
+			t.Errorf("alternateTag(%q) = %q, want %q", tag, got, want)
+		}
+	}
+}
+
+func TestClient_GetReleaseByTagTriesAlternateSpelling(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	for _, tag := range []string{"v0.24.0", "1.2.3"} {
+		mux.HandleFunc("/repos/o/r/releases/tags/"+tag, func(w http.ResponseWriter, _ *http.Request) {
+			if err := json.NewEncoder(w).Encode(Release{TagName: tag}); err != nil {
+				t.Errorf("encode release: %v", err)
+			}
+		})
+	}
+	mux.HandleFunc("/repos/o/r/releases", func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode([]Release{{TagName: "v0.24.0"}}); err != nil {
+			t.Errorf("encode releases: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := NewClientWithHTTP(srv.Client(), srv.URL)
+
+	for requested, want := range map[string]string{"0.24.0": "v0.24.0", "v1.2.3": "1.2.3", "v0.24.0": "v0.24.0"} {
+		got, err := client.GetReleaseByTag("o", "r", requested)
+		if err != nil {
+			t.Errorf("GetReleaseByTag(%q) error: %v", requested, err)
+			continue
+		}
+		if got.TagName != want {
+			t.Errorf("GetReleaseByTag(%q) = %q, want %q", requested, got.TagName, want)
+		}
+	}
+
+	_, err := client.GetReleaseByTag("o", "r", "2.0.0")
+	if err == nil || err.Error() != "release 2.0.0 in o/r not found (also tried v2.0.0)" {
+		t.Errorf("GetReleaseByTag(2.0.0) error = %v, want both spellings reported", err)
+	}
+	_, err = client.GetReleaseByTag("o", "r", "nightly")
+	if err == nil || err.Error() != "release nightly in o/r not found" {
+		t.Errorf("GetReleaseByTag(nightly) error = %v, want no alternate spelling", err)
+	}
+}
+
 func TestRelease_DisplayName(t *testing.T) {
 	t.Parallel()
 
@@ -450,6 +598,152 @@ func TestRelease_DisplayName(t *testing.T) {
 			t.Parallel()
 			if got := tt.release.DisplayName(); got != tt.want {
 				t.Errorf("DisplayName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClient_MissingLatest_Paginates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		drafts    int
+		published bool
+		older     int
+		wantPages []string
+	}{
+		{name: "prerelease after ten drafts", drafts: 10, published: true, wantPages: []string{"1"}},
+		{name: "prerelease on third page", drafts: 200, published: true, wantPages: []string{"1", "2", "3"}},
+		{name: "stop at first published release", drafts: 100, published: true, older: 199, wantPages: []string{"1", "2"}},
+		{name: "no releases", wantPages: []string{"1"}},
+		{name: "short draft page", drafts: 10, wantPages: []string{"1"}},
+		{name: "drafts on multiple pages", drafts: 125, wantPages: []string{"1", "2"}},
+		{name: "full draft pages then empty page", drafts: 200, wantPages: []string{"1", "2", "3"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			count := tt.drafts + tt.older
+			if tt.published {
+				count++
+			}
+			all := make([]Release, count)
+			for i := range all {
+				all[i] = Release{TagName: fmt.Sprintf("draft-%d", i), Draft: true}
+			}
+			want := "owner/repo has no published releases"
+			if tt.published {
+				all[tt.drafts] = Release{TagName: "v2.0.0-rc.1", Prerelease: true}
+				want = "owner/repo has no stable release, only prereleases (newest: v2.0.0-rc.1); request a prerelease by its tag to install it"
+			}
+
+			var mu sync.Mutex
+			var pages []string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/owner/repo/releases/latest", http.NotFound)
+			mux.HandleFunc("/repos/owner/repo/releases", func(w http.ResponseWriter, r *http.Request) {
+				perPage, err := strconv.Atoi(r.URL.Query().Get("per_page"))
+				if err != nil || perPage != maxReleasesPerPage {
+					t.Errorf("per_page = %q, want %d", r.URL.Query().Get("per_page"), maxReleasesPerPage)
+					http.Error(w, "invalid page size", http.StatusBadRequest)
+					return
+				}
+				page, err := strconv.Atoi(r.URL.Query().Get("page"))
+				if err != nil || page < 1 {
+					t.Errorf("invalid page %q", r.URL.Query().Get("page"))
+					http.Error(w, "invalid page", http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				pages = append(pages, r.URL.Query().Get("page"))
+				mu.Unlock()
+				start := min((page-1)*perPage, len(all))
+				end := min(start+perPage, len(all))
+				if err := json.NewEncoder(w).Encode(all[start:end]); err != nil {
+					t.Errorf("encode page: %v", err)
+				}
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			client := NewClientWithHTTP(srv.Client(), srv.URL).WithToken("token")
+			got, err := client.GetLatestRelease("owner", "repo")
+			if err == nil || err.Error() != want {
+				t.Errorf("GetLatestRelease() error = %v, want %q", err, want)
+			}
+			if got != nil {
+				t.Errorf("GetLatestRelease() = %+v, want nil", got)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !reflect.DeepEqual(pages, tt.wantPages) {
+				t.Errorf("requested pages %v, want %v", pages, tt.wantPages)
+			}
+		})
+	}
+}
+
+func TestClient_MissingLatest_LaterPageErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		want          string
+		wantNotFound  bool
+		wantRateLimit bool
+	}{
+		{name: "repository not found", status: http.StatusNotFound, want: "repository owner/repo not found", wantNotFound: true},
+		{name: "server error", status: http.StatusInternalServerError, body: "server error", want: "listing releases for owner/repo: unexpected status 500"},
+		{name: "rate limit", status: http.StatusTooManyRequests, want: "rate limit exceeded", wantRateLimit: true},
+		{name: "invalid JSON", status: http.StatusOK, body: "[", want: "decoding releases:"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			drafts := make([]Release, maxReleasesPerPage)
+			for i := range drafts {
+				drafts[i].Draft = true
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/owner/repo/releases/latest", http.NotFound)
+			mux.HandleFunc("/repos/owner/repo/releases", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") == "1" {
+					if err := json.NewEncoder(w).Encode(drafts); err != nil {
+						t.Errorf("encode drafts: %v", err)
+					}
+					return
+				}
+				if r.URL.Query().Get("page") != "2" {
+					t.Errorf("page = %q, want 2", r.URL.Query().Get("page"))
+				}
+				if tt.wantRateLimit {
+					w.Header().Set("Retry-After", "10")
+				}
+				w.WriteHeader(tt.status)
+				if _, err := io.WriteString(w, tt.body); err != nil {
+					t.Errorf("write error response: %v", err)
+				}
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			client := NewClientWithHTTP(srv.Client(), srv.URL).WithToken("token")
+			_, err := client.GetLatestRelease("owner", "repo")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("GetLatestRelease() error = %v, want it to contain %q", err, tt.want)
+			}
+			var nf *NotFoundError
+			if got := errors.As(err, &nf); got != tt.wantNotFound {
+				t.Errorf("errors.As(*NotFoundError) = %v, want %v", got, tt.wantNotFound)
+			}
+			var rl *RateLimitError
+			if got := errors.As(err, &rl); got != tt.wantRateLimit {
+				t.Errorf("errors.As(*RateLimitError) = %v, want %v", got, tt.wantRateLimit)
 			}
 		})
 	}
@@ -713,6 +1007,66 @@ func TestClient_ListReleases_Truncate(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("ListReleases() returned %d releases, want 2", len(got))
+	}
+}
+
+func TestClient_ListReleases_Paginates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		available int
+		limit     int
+		wantCount int
+		wantPages []string
+	}{
+		{name: "limit spans three pages", available: 300, limit: 250, wantCount: 250, wantPages: []string{"1", "2", "3"}},
+		{name: "repository runs out first", available: 130, limit: 250, wantCount: 130, wantPages: []string{"1", "2"}},
+		{name: "limit within one page", available: 300, limit: 100, wantCount: 100, wantPages: []string{"1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			all := make([]Release, tt.available)
+			for i := range all {
+				all[i] = Release{TagName: fmt.Sprintf("v1.0.%d", tt.available-i)}
+			}
+			var mu sync.Mutex
+			var pages []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				mu.Lock()
+				pages = append(pages, r.URL.Query().Get("page"))
+				mu.Unlock()
+				if perPage != 100 {
+					t.Errorf("per_page = %d, want 100", perPage)
+				}
+				start := min((page-1)*perPage, len(all))
+				end := min(start+perPage, len(all))
+				if err := json.NewEncoder(w).Encode(all[start:end]); err != nil {
+					t.Errorf("encode page: %v", err)
+				}
+			}))
+			defer srv.Close()
+
+			client := NewClientWithHTTP(srv.Client(), srv.URL)
+			got, err := client.ListReleases("owner", "repo", tt.limit)
+			if err != nil {
+				t.Fatalf("ListReleases() error: %v", err)
+			}
+			if len(got) != tt.wantCount {
+				t.Errorf("ListReleases() returned %d releases, want %d", len(got), tt.wantCount)
+			}
+			if len(got) > 0 && got[0].TagName != all[0].TagName {
+				t.Errorf("ListReleases()[0] = %q, want newest %q", got[0].TagName, all[0].TagName)
+			}
+			if !reflect.DeepEqual(pages, tt.wantPages) {
+				t.Errorf("requested pages %v, want %v", pages, tt.wantPages)
+			}
+		})
 	}
 }
 

@@ -3,9 +3,13 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/JakeTRogers/getRelease/internal/github"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestNormalizeOutputFormat(t *testing.T) {
@@ -101,4 +105,29 @@ func TestResolveInstallNamesForSelection(t *testing.T) {
 			t.Fatal("resolveInstallNamesForSelection() error = nil, want error")
 		}
 	})
+}
+
+func TestReportError(t *testing.T) {
+	t.Parallel()
+
+	rateLimit := &github.RateLimitError{ResetAt: time.Date(2026, time.October, 5, 12, 0, 0, 0, time.UTC)}
+	tests := []struct {
+		name       string
+		err        error
+		wantCode   int
+		wantOutput string
+	}{
+		{name: "cancelled prompt", err: fmt.Errorf("selecting asset: %w", selector.ErrCancelled), wantCode: 2},
+		{name: "rate limit drops wrapping", err: fmt.Errorf("fetching release: %w", rateLimit), wantCode: 1, wantOutput: "Error: " + rateLimit.Error() + "\n"},
+		{name: "other error", err: errors.New("boom"), wantCode: 1, wantOutput: "Error: boom\n"},
+	}
+	for _, tt := range tests {
+		var out bytes.Buffer
+		if got := reportError(&out, tt.err); got != tt.wantCode {
+			t.Errorf("%s: reportError() = %d, want %d", tt.name, got, tt.wantCode)
+		}
+		if out.String() != tt.wantOutput {
+			t.Errorf("%s: reportError() wrote %q, want %q", tt.name, out.String(), tt.wantOutput)
+		}
+	}
 }

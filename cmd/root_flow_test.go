@@ -5,10 +5,14 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,6 +20,7 @@ import (
 
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestInitConfigSetsLogLevel(t *testing.T) {
@@ -34,8 +39,9 @@ func TestInitConfigSetsLogLevel(t *testing.T) {
 		enableDebug bool
 	}{
 		{name: "default", verbose: "0", enableInfo: false, enableDebug: false},
-		{name: "info", verbose: "2", enableInfo: true, enableDebug: false},
-		{name: "debug", verbose: "3", enableInfo: true, enableDebug: true},
+		{name: "info", verbose: "1", enableInfo: true, enableDebug: false},
+		{name: "debug", verbose: "2", enableInfo: true, enableDebug: true},
+		{name: "extra -v stays debug", verbose: "3", enableInfo: true, enableDebug: true},
 	}
 
 	for _, tt := range tests {
@@ -50,6 +56,9 @@ func TestInitConfigSetsLogLevel(t *testing.T) {
 		}
 
 		logger := slog.Default()
+		if !logger.Enabled(context.Background(), slog.LevelWarn) {
+			t.Fatalf("%s: warnings disabled, want them shown at every verbosity", tt.name)
+		}
 		if got := logger.Enabled(context.Background(), slog.LevelInfo); got != tt.enableInfo {
 			t.Fatalf("%s: info enabled = %v, want %v", tt.name, got, tt.enableInfo)
 		}
@@ -752,6 +761,234 @@ func TestRunRootReportsBinariesNoLongerTracked(t *testing.T) {
 	records := loadHistoryRecords(t)
 	if len(records) != 1 || len(records[0].Binaries) != 1 || records[0].Binaries[0].InstalledAs != "tool2" {
 		t.Fatalf("history = %+v, want one record tracking tool2", records)
+	}
+}
+
+func TestRunRootCancelledSelectionReturnsError(t *testing.T) {
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v1.0.0",
+				Assets: []github.Asset{
+					{Name: "tool_linux_amd64.tar.gz"},
+					{Name: "tool-extended_linux_amd64.tar.gz"},
+				},
+			}, nil
+		},
+		downloadAsset: func(github.Asset, string) (int64, error) {
+			t.Fatal("DownloadAsset() should not be called after a cancelled selection")
+			return 0, nil
+		},
+	})
+	selectItems = func([]string, string) (int, error) {
+		return -1, selector.ErrCancelled
+	}
+
+	baseDir := t.TempDir()
+	setTestConfig(filepath.Join(baseDir, "downloads"), filepath.Join(baseDir, "bin"))
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, nil); !errors.Is(err, selector.ErrCancelled) {
+		t.Fatalf("runRoot() error = %v, want selector.ErrCancelled", err)
+	}
+}
+
+func TestNewWorkDir(t *testing.T) {
+	t.Parallel()
+
+	downloadDir := filepath.Join(t.TempDir(), "downloads")
+	first, err := newWorkDir(downloadDir, "tool")
+	if err != nil {
+		t.Fatalf("newWorkDir() error: %v", err)
+	}
+	second, err := newWorkDir(downloadDir, "tool")
+	if err != nil {
+		t.Fatalf("newWorkDir() error: %v", err)
+	}
+	if first == second {
+		t.Fatalf("newWorkDir() returned %q twice, want unique directories", first)
+	}
+	for _, dir := range []string{first, second} {
+		if filepath.Dir(dir) != downloadDir || !regexp.MustCompile(`^tool-\d{8}T\d{6}-\d+$`).MatchString(filepath.Base(dir)) {
+			t.Errorf("newWorkDir() = %q, want %s/tool-<YYYYMMDDTHHMMSS>-<suffix>", dir, downloadDir)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+			t.Errorf("work dir mode = %o, want 755", info.Mode().Perm())
+		}
+	}
+}
+
+// archiveRootTest runs the root command against a release whose only asset is
+// a tar.gz containing an executable "tool" script, with autoExtract set as
+// given, and returns the parsed JSON result.
+func archiveRootTest(t *testing.T, autoExtract, downloadOnly bool) (rootCommandResult, string) {
+	t.Helper()
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{TagName: "v1.0.0", Assets: []github.Asset{{
+				Name:        "tool_linux_amd64.tar.gz",
+				DownloadURL: "https://example.invalid/tool_linux_amd64.tar.gz",
+			}}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeTarGz(t, destPath, map[string][]byte{"tool": []byte("#!/bin/sh\nexit 0\n")}), nil
+		},
+	})
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	cfgViper.Set("autoExtract", autoExtract)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "format": "json", "download-only": strconv.FormatBool(downloadOnly)} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+	var result rootCommandResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, out.String())
+	}
+	return result, installDir
+}
+
+func TestRunRootInstallsArchiveWithAutoExtractDisabled(t *testing.T) {
+	result, installDir := archiveRootTest(t, false, false)
+
+	if !result.Extracted || result.ExtractDir != filepath.Join(filepath.Dir(result.DownloadPath), "extracted") {
+		t.Fatalf("result = extracted %v into %q, want extraction into the work dir's extracted/", result.Extracted, result.ExtractDir)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "tool")); err != nil {
+		t.Fatalf("installed binary missing: %v", err)
+	}
+	records := loadHistoryRecords(t)
+	if len(records) != 1 || records[0].Binaries[0].Name != "tool" {
+		t.Fatalf("history = %+v, want binary recorded relative to the extracted root", records)
+	}
+}
+
+func TestRunRootDownloadOnlyExtraction(t *testing.T) {
+	result, _ := archiveRootTest(t, true, true)
+	wantDir := filepath.Join(filepath.Dir(result.DownloadPath), "extracted")
+	if !result.Extracted || result.ExtractDir != wantDir {
+		t.Fatalf("autoExtract on: extracted %v into %q, want %q", result.Extracted, result.ExtractDir, wantDir)
+	}
+	if _, err := os.Stat(filepath.Join(wantDir, "tool")); err != nil {
+		t.Fatalf("extracted file missing: %v", err)
+	}
+
+	result, _ = archiveRootTest(t, false, true)
+	if result.Extracted || result.ExtractDir != "" {
+		t.Fatalf("autoExtract off: extracted %v into %q, want no extraction", result.Extracted, result.ExtractDir)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(result.DownloadPath), "extracted")); !os.IsNotExist(err) {
+		t.Fatalf("extracted dir exists with autoExtract off (stat err: %v)", err)
+	}
+}
+
+func TestRunRootReportsAlternateTagSpelling(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+	useTestCommandDeps(t, &fakeReleaseClient{
+		// The client resolved the requested "1.2.3" to the "v1.2.3" tag.
+		getReleaseByTag: func(_, _, tag string) (*github.Release, error) {
+			return &github.Release{TagName: "v" + tag, Assets: []github.Asset{{
+				Name:        "tool_linux_amd64",
+				DownloadURL: "https://example.invalid/tool_linux_amd64",
+			}}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	})
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "tag": "1.2.3"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+	if !strings.Contains(out.String(), "Fetching 1.2.3 release for cli/tool...\n  tag 1.2.3 not found, using v1.2.3\n") {
+		t.Fatalf("runRoot() output = %q, want tag fallback note under the heading", out.String())
+	}
+	if records := loadHistoryRecords(t); len(records) != 1 || records[0].Tag != "v1.2.3" {
+		t.Fatalf("history = %+v, want the resolved tag v1.2.3 recorded", records)
+	}
+}
+
+func TestRunRootNormalizesPlatformOverrides(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(_, _ string) (*github.Release, error) {
+			return &github.Release{TagName: "v1.0.0", Assets: []github.Asset{
+				{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/amd64"},
+				{Name: "tool_linux_arm64", DownloadURL: "https://example.invalid/arm64"},
+			}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	})
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	cfgViper.Set("assetPreferences.os", "Linux")
+	cfgViper.Set("assetPreferences.arch", "aarch64")
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+	records := loadHistoryRecords(t)
+	if len(records) != 1 || records[0].Asset.Name != "tool_linux_arm64" || records[0].OS != "linux" || records[0].Arch != "arm64" {
+		t.Fatalf("history = %+v, want the arm64 asset recorded as linux/arm64", records)
 	}
 }
 

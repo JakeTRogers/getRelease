@@ -232,10 +232,49 @@ func joinURLPath(parts []string) string {
 	return path
 }
 
+func isNotFound(err error) bool {
+	var notFound *NotFoundError
+	return errors.As(err, &notFound)
+}
+
+// repoNotFound reports a repository that does not exist or that the client's
+// credentials cannot see; GitHub answers 404 for both.
+func (c *Client) repoNotFound(owner, repo string) error {
+	err := &NotFoundError{Resource: fmt.Sprintf("repository %s/%s", owner, repo)}
+	if c.token == "" {
+		return fmt.Errorf("%w; if it is private, set GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or run 'gh auth login'", err)
+	}
+	return fmt.Errorf("%w, or the configured token cannot access it", err)
+}
+
+// explainMissingLatest explains a 404 for a repository's latest release: the
+// repository is missing or inaccessible, has no published releases, or has
+// only prereleases, which GitHub never reports as the latest release.
+// Authenticated clients may need to page past drafts to find a published release.
+func (c *Client) explainMissingLatest(owner, repo string) error {
+	for page := 1; ; page++ {
+		releases, err := c.listReleasesPage(owner, repo, maxReleasesPerPage, page)
+		if err != nil {
+			return err
+		}
+		for _, r := range releases {
+			if !r.Draft {
+				return fmt.Errorf("%s/%s has no stable release, only prereleases (newest: %s); request a prerelease by its tag to install it", owner, repo, r.TagName)
+			}
+		}
+		if len(releases) < maxReleasesPerPage {
+			return fmt.Errorf("%s/%s has no published releases", owner, repo)
+		}
+	}
+}
+
 // GetLatestRelease fetches the latest published release for a repository.
 func (c *Client) GetLatestRelease(owner, repo string) (*Release, error) {
 	path := repoReleasePath(owner, repo, "releases", "latest")
 	body, err := c.doRequest(path)
+	if isNotFound(err) {
+		return nil, c.explainMissingLatest(owner, repo)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching latest release for %s/%s: %w", owner, repo, err)
 	}
@@ -247,10 +286,41 @@ func (c *Client) GetLatestRelease(owner, repo string) (*Release, error) {
 	return &release, nil
 }
 
-// GetReleaseByTag fetches a specific release by its tag name.
+// GetReleaseByTag fetches a specific release by its tag name. Version tags
+// are written both with and without a leading "v", so when tag is not found
+// the other form is tried; the returned release's TagName is the tag found.
 func (c *Client) GetReleaseByTag(owner, repo, tag string) (*Release, error) {
+	release, err := c.getReleaseByTag(owner, repo, tag)
+	if !isNotFound(err) {
+		return release, err
+	}
+	alternate := alternateTag(tag)
+	if alternate != "" {
+		release, err := c.getReleaseByTag(owner, repo, alternate)
+		if !isNotFound(err) {
+			return release, err
+		}
+	}
+
+	// Distinguish a missing tag from a missing repository.
+	if _, listErr := c.ListReleases(owner, repo, 1); listErr != nil {
+		return nil, listErr
+	}
+	notFound := &NotFoundError{Resource: fmt.Sprintf("release %s in %s/%s", tag, owner, repo)}
+	if alternate != "" {
+		return nil, fmt.Errorf("%w (also tried %s)", notFound, alternate)
+	}
+	return nil, notFound
+}
+
+// getReleaseByTag fetches the release for exactly tag, returning a bare
+// *NotFoundError when there is none.
+func (c *Client) getReleaseByTag(owner, repo, tag string) (*Release, error) {
 	path := repoReleasePath(owner, repo, "releases", "tags", tag)
 	body, err := c.doRequest(path)
+	if isNotFound(err) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching release %s for %s/%s: %w", tag, owner, repo, err)
 	}
@@ -262,19 +332,56 @@ func (c *Client) GetReleaseByTag(owner, repo, tag string) (*Release, error) {
 	return &release, nil
 }
 
-// ListReleases fetches up to limit releases for a repository, ordered by most recent first.
+// alternateTag returns the other spelling of a version tag: without its
+// leading "v" ("v1.2.3" -> "1.2.3") or with one ("1.2.3" -> "v1.2.3"). It
+// returns "" for tags that do not start with a version number.
+func alternateTag(tag string) string {
+	isDigit := func(b byte) bool { return b >= '0' && b <= '9' }
+	switch {
+	case len(tag) > 1 && (tag[0] == 'v' || tag[0] == 'V') && isDigit(tag[1]):
+		return tag[1:]
+	case len(tag) > 0 && isDigit(tag[0]):
+		return "v" + tag
+	default:
+		return ""
+	}
+}
+
+// maxReleasesPerPage is the largest page size the GitHub releases API serves.
+const maxReleasesPerPage = 100
+
+// ListReleases fetches up to limit releases for a repository, ordered by most
+// recent first, requesting further pages of up to 100 releases as needed.
 func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) {
 	if limit <= 0 {
 		limit = 30
 	}
+	perPage := min(limit, maxReleasesPerPage)
 
-	perPage := limit
-	if perPage > 100 {
-		perPage = 100
+	var releases []Release
+	for page := 1; len(releases) < limit; page++ {
+		batch, err := c.listReleasesPage(owner, repo, perPage, page)
+		if err != nil {
+			return nil, err
+		}
+		releases = append(releases, batch...)
+		if len(batch) < perPage {
+			break // last page
+		}
 	}
 
-	path := fmt.Sprintf("%s?per_page=%d", repoReleasePath(owner, repo, "releases"), perPage)
+	if len(releases) > limit {
+		releases = releases[:limit]
+	}
+	return releases, nil
+}
+
+func (c *Client) listReleasesPage(owner, repo string, perPage, page int) ([]Release, error) {
+	path := fmt.Sprintf("%s?per_page=%d&page=%d", repoReleasePath(owner, repo, "releases"), perPage, page)
 	body, err := c.doRequest(path)
+	if isNotFound(err) {
+		return nil, c.repoNotFound(owner, repo)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
 	}
@@ -282,10 +389,6 @@ func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) 
 	var releases []Release
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("decoding releases: %w", err)
-	}
-
-	if len(releases) > limit {
-		releases = releases[:limit]
 	}
 	return releases, nil
 }

@@ -85,6 +85,22 @@ func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 	}
 }
 
+func TestCompleteConfigShowFormatValues(t *testing.T) {
+	t.Parallel()
+
+	got, directive := completeConfigShowFormatValues(&cobra.Command{}, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeConfigShowFormatValues() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+	want := []string{
+		"yaml\tYAML output",
+		"json\tmachine-readable JSON output",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeConfigShowFormatValues() = %v, want %v", got, want)
+	}
+}
+
 func TestCompleteOutputFormatValues(t *testing.T) {
 	t.Parallel()
 
@@ -242,6 +258,7 @@ func TestCompleteHistoryListSortValues(t *testing.T) {
 		"owner\tsort by repository owner",
 		"repo\tsort by repository name",
 		"installed\tsort by installed date, oldest first",
+		"updated\tsort by last update, oldest first",
 	}
 	if !reflect.DeepEqual([]string(got), want) {
 		t.Fatalf("completeHistoryListSortValues() = %v, want %v", got, want)
@@ -337,6 +354,17 @@ func TestLoadHistoryRecordsForCompletionAndInstalledTargets(t *testing.T) {
 	got, _ = completeInstalledUpgradeTargets(cmd, nil, "")
 	if len(got) != 0 {
 		t.Fatalf("completeInstalledUpgradeTargets() with --all = %v, want no completions", got)
+	}
+
+	byRepo := &cobra.Command{}
+	byRepo.Flags().String("owner", "", "")
+	byRepo.Flags().String("repo", "", "")
+	if err := byRepo.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner flag: %v", err)
+	}
+	got, _ = completeInstalledUpgradeTargets(byRepo, nil, "")
+	if len(got) != 0 {
+		t.Fatalf("completeInstalledUpgradeTargets() with --owner = %v, want no completions", got)
 	}
 }
 

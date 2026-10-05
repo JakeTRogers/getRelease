@@ -34,6 +34,11 @@ func TestValidateUpgradeArgs(t *testing.T) {
 		{name: "all with target", args: []string{"k9s"}, all: true, wantError: true},
 		{name: "all with owner", all: true, owner: "derailed", wantError: true},
 		{name: "all with repo", all: true, repo: "k9s", wantError: true},
+		{name: "owner and repo without target", owner: "derailed", repo: "k9s"},
+		{name: "owner without repo", owner: "derailed", wantError: true},
+		{name: "repo without owner", repo: "k9s", wantError: true},
+		{name: "owner and repo with target", args: []string{"k9s"}, owner: "derailed", repo: "k9s", wantError: true},
+		{name: "two targets", args: []string{"k9s", "fzf"}, wantError: true},
 	}
 
 	for _, tt := range tests {
@@ -107,7 +112,7 @@ func TestRunUpgradeUnpinnedUsesLatestRelease(t *testing.T) {
 	if err := runUpgrade(cmd, []string{"tool"}); err != nil {
 		t.Fatalf("runUpgrade() error: %v", err)
 	}
-	if !strings.Contains(out.String(), "Would upgrade https://github.com/cli/tool/releases from v1.0.0 to v1.0.1") {
+	if !strings.Contains(out.String(), "Would upgrade cli/tool from v1.0.0 to v1.0.1") {
 		t.Fatalf("runUpgrade() output = %q, want dry-run summary", out.String())
 	}
 }

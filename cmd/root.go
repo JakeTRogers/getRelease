@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
 	"github.com/JakeTRogers/getRelease/internal/archive"
@@ -36,6 +37,7 @@ type rootCommandResult struct {
 	DownloadPath string          `json:"downloadPath"`
 	DownloadSize int64           `json:"downloadSize"`
 	Extracted    bool            `json:"extracted"`
+	ExtractDir   string          `json:"extractDir,omitempty"`
 	DownloadOnly bool            `json:"downloadOnly"`
 	Binaries     []string        `json:"binaries,omitempty"`
 	Installed    []string        `json:"installed,omitempty"`
@@ -61,8 +63,19 @@ extracts archives, and installs selected binaries to a configurable
 target directory.
 
 Specify a repository using --owner and --repo flags or a --url flag.
-By default, the latest release is fetched and assets matching the
-current OS and architecture are presented for selection.`,
+By default, the latest release is installed. The asset matching the
+current OS and architecture is selected automatically, with a prompt
+when several match equally well.`,
+	Example: `  # Install the latest release
+  getRelease --owner sharkdp --repo bat
+  getRelease --url https://github.com/junegunn/fzf
+
+  # Install a specific release, or only download it
+  getRelease -o junegunn -r fzf --tag v0.66.0
+  getRelease -o sharkdp -r fd --download-only
+
+  # Upgrade everything installed with getRelease
+  getRelease upgrade --all`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -71,34 +84,43 @@ current OS and architecture are presented for selection.`,
 	RunE: runRoot,
 }
 
+// exitCancelled is the exit status when the user cancels an interactive prompt.
+const exitCancelled = 2
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		var rateLimitErr *github.RateLimitError
-		if errors.As(err, &rateLimitErr) {
-			if _, writeErr := fmt.Fprintf(os.Stderr, "Error: %s\n", rateLimitErr); writeErr != nil {
-				os.Exit(1)
-			}
-			os.Exit(1)
-		}
-		if _, writeErr := fmt.Fprintf(os.Stderr, "Error: %s\n", err); writeErr != nil {
-			os.Exit(1)
-		}
-		os.Exit(1)
+		os.Exit(reportError(os.Stderr, err))
 	}
+}
+
+// reportError prints err for the user and returns the process exit status:
+// exitCancelled, printing nothing, when the user cancelled a prompt, and 1
+// otherwise. A rate limit error is printed without its wrapping context.
+func reportError(w io.Writer, err error) int {
+	if errors.Is(err, selector.ErrCancelled) {
+		return exitCancelled
+	}
+	var rateLimitErr *github.RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		err = rateLimitErr
+	}
+	// The process exits next either way, so a failed write is not reported.
+	_, _ = fmt.Fprintf(w, "Error: %s\n", err)
+	return 1
 }
 
 func init() {
 	// Persistent flags (available to all subcommands)
-	rootCmd.PersistentFlags().CountP("verbose", "v", "increase log verbosity (repeatable: -v, -vv, -vvv)")
+	rootCmd.PersistentFlags().CountP("verbose", "v", "increase log verbosity: -v for info, -vv for debug")
 
 	// Root-specific flags
 	rootCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	rootCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
-	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
+	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL (https or git@host:owner/repo)")
 	rootCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	rootCmd.Flags().StringP("tag", "t", "", "release tag/version (default: latest)")
-	rootCmd.Flags().BoolP("download-only", "d", false, "download and extract without installing")
+	rootCmd.Flags().BoolP("download-only", "d", false, "download without installing; archives are extracted unless autoExtract is false")
 	rootCmd.Flags().String("install-as", "", "override installed filename when exactly one binary is installed")
 	rootCmd.Flags().String("format", "text", "output format: text, json")
 	rootCmd.Flags().Int("cooldown", 0, "minimum release age in days (overrides config; 0 disables)")
@@ -124,18 +146,17 @@ func initConfig(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Set log level based on verbosity count
+	// Set log level based on verbosity count. Warnings are always shown:
+	// they report problems such as skipped history records.
 	verbose, _ := cmd.Flags().GetCount("verbose")
 	var level slog.Level
 	switch {
-	case verbose >= 3:
+	case verbose >= 2:
 		level = slog.LevelDebug
-	case verbose == 2:
-		level = slog.LevelInfo
 	case verbose == 1:
-		level = slog.LevelWarn
+		level = slog.LevelInfo
 	default:
-		level = slog.LevelError
+		level = slog.LevelWarn
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
@@ -221,8 +242,26 @@ func canonicalRepoName(owner, repo string, rel *github.Release) (string, string)
 	return urlOwner, urlRepo
 }
 
+// anyFlagChanged reports whether any flag was set on the command line.
+func anyFlagChanged(cmd *cobra.Command) bool {
+	changed := false
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		changed = changed || f.Changed
+	})
+	return changed
+}
+
 // runRoot implements the full download/extract/select/install pipeline.
-func runRoot(cmd *cobra.Command, _ []string) error {
+func runRoot(cmd *cobra.Command, args []string) error {
+	// Validate here to preserve Cobra's typo suggestions during command lookup.
+	if err := cobra.NoArgs(cmd, args); err != nil {
+		return err
+	}
+	if !anyFlagChanged(cmd) {
+		// Bare invocation: show how to use the tool rather than an error.
+		return cmd.Help()
+	}
+
 	owner, repo, host, err := resolveRepo(cmd)
 	if err != nil {
 		return err
@@ -253,12 +292,12 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	// Determine OS/Arch (allow config overrides)
 	var osName, arch string
 	if cfg.AssetPreferences.OS != "" {
-		osName = cfg.AssetPreferences.OS
+		osName = platform.NormalizeOS(cfg.AssetPreferences.OS)
 	} else {
 		osName = platform.Detect().OS
 	}
 	if cfg.AssetPreferences.Arch != "" {
-		arch = cfg.AssetPreferences.Arch
+		arch = platform.NormalizeArch(cfg.AssetPreferences.Arch)
 	} else {
 		arch = platform.Detect().Arch
 	}
@@ -273,7 +312,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	if tag != "" {
 		rel, err = client.GetReleaseByTag(owner, repo, tag)
 		if err != nil {
-			return fmt.Errorf("fetching release: %w", err)
+			return err
 		}
 		if err := policy.checkRelease(rel); err != nil {
 			return err
@@ -281,12 +320,12 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	} else {
 		rel, err = client.GetLatestRelease(owner, repo)
 		if err != nil {
-			return fmt.Errorf("fetching release: %w", err)
+			return err
 		}
 		if policy.enabled() && !policy.releaseEligible(rel) {
 			releases, err := client.ListReleases(owner, repo, 100)
 			if err != nil {
-				return fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+				return err
 			}
 			fallback, err := findCooldownFallback(releases, owner, repo, policy)
 			if err != nil {
@@ -313,6 +352,11 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	if textOutput {
 		if _, err := fmt.Fprintf(out, "Fetching %s release for %s/%s...\n", which, owner, repo); err != nil {
 			return fmt.Errorf("writing release heading: %w", err)
+		}
+		if tag != "" && rel.TagName != tag {
+			if _, err := fmt.Fprintf(out, "  tag %s not found, using %s\n", tag, rel.TagName); err != nil {
+				return fmt.Errorf("writing tag fallback message: %w", err)
+			}
 		}
 		if cd := result.Cooldown; cd != nil {
 			if _, err := fmt.Fprintf(out, "  release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", cd.SkippedTag, cd.SkippedAgeDays, cd.Days, rel.TagName); err != nil {
@@ -359,9 +403,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		}
 		idx, err := selectItems(items, "Select an asset to download")
 		if err != nil {
-			if errors.Is(err, selector.ErrCancelled) {
-				os.Exit(2)
-			}
 			return fmt.Errorf("selecting asset: %w", err)
 		}
 		selectedAsset = matches[idx]
@@ -372,9 +413,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	result.Asset = selectedAsset
 
 	// Prepare work directory
-	workDir := filepath.Join(cfg.DownloadDir, fmt.Sprintf("%s-%d", repo, time.Now().Unix()))
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("creating work dir: %w", err)
+	workDir, err := newWorkDir(cfg.DownloadDir, repo)
+	if err != nil {
+		return err
 	}
 
 	// Download asset
@@ -396,56 +437,59 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Extract if appropriate
-	extracted := false
-	if cfg.AutoExtract && archive.IsArchive(selectedAsset.Name) {
+	// Extract archives. Installing requires it; autoExtract only decides
+	// whether --download-only extracts.
+	downloadOnly, _ := cmd.Flags().GetBool("download-only")
+	if archive.IsArchive(selectedAsset.Name) && (cfg.AutoExtract || !downloadOnly) {
 		if textOutput {
 			if _, err := fmt.Fprintf(out, "Extracting %s...\n", selectedAsset.Name); err != nil {
 				return fmt.Errorf("writing extraction message: %w", err)
 			}
 		}
-		if err := archive.Extract(assetPath, workDir); err != nil {
+		extractDir := filepath.Join(workDir, extractedDirName)
+		if err := archive.Extract(assetPath, extractDir); err != nil {
 			return fmt.Errorf("extracting asset: %w", err)
 		}
-		extracted = true
+		result.Extracted = true
+		result.ExtractDir = extractDir
 	}
-	result.Extracted = extracted
 
 	// If download-only, report path and exit
-	downloadOnly, _ := cmd.Flags().GetBool("download-only")
 	if downloadOnly {
 		result.DownloadOnly = true
 		if textOutput {
 			if _, err := fmt.Fprintf(out, "Downloaded to %s\n", assetPath); err != nil {
 				return fmt.Errorf("writing download-only result: %w", err)
 			}
+			if result.Extracted {
+				if _, err := fmt.Fprintf(out, "Extracted to %s\n", result.ExtractDir); err != nil {
+					return fmt.Errorf("writing extraction result: %w", err)
+				}
+			}
 			return nil
 		}
 		return outputRootResult(out, result)
 	}
 
-	// Find binaries
+	// Find binaries, as paths relative to payloadDir
+	payloadDir := workDir
 	var bins []string
-	if extracted {
-		bins, err = archive.FindBinaries(workDir)
+	if result.Extracted {
+		payloadDir = result.ExtractDir
+		bins, err = archive.FindBinaries(payloadDir)
 		if err != nil {
 			return fmt.Errorf("finding binaries: %w", err)
 		}
 	} else {
-		if archive.IsArchive(selectedAsset.Name) {
-			// archive was not extracted - no binaries available
-			bins = nil
-		} else {
-			// downloaded file itself is the binary
-			if err := checkRawAssetExecutable(assetPath, selectedAsset.Name); err != nil {
-				return err
-			}
-			bins = []string{selectedAsset.Name}
+		// downloaded file itself is the binary
+		if err := checkRawAssetExecutable(assetPath, selectedAsset.Name); err != nil {
+			return err
 		}
+		bins = []string{selectedAsset.Name}
 	}
 
 	if len(bins) == 0 {
-		return fmt.Errorf("no installable binaries found in %s", workDir)
+		return fmt.Errorf("no installable binaries found in %s", payloadDir)
 	}
 
 	// Select binaries to install
@@ -460,9 +504,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	} else {
 		ok, err := confirmAction(fmt.Sprintf("Install all %d binaries?", len(bins)), true)
 		if err != nil {
-			if errors.Is(err, selector.ErrCancelled) {
-				os.Exit(2)
-			}
 			return fmt.Errorf("confirmation prompt: %w", err)
 		}
 		if ok {
@@ -470,9 +511,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		} else {
 			idx, err := selectItems(bins, "Select a binary to install")
 			if err != nil {
-				if errors.Is(err, selector.ErrCancelled) {
-					os.Exit(2)
-				}
 				return fmt.Errorf("selecting binary: %w", err)
 			}
 			toInstall = []string{bins[idx]}
@@ -489,7 +527,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	for _, bin := range toInstall {
-		src := filepath.Join(workDir, bin)
+		src := filepath.Join(payloadDir, bin)
 		absSrc, err := filepath.Abs(src)
 		if err != nil {
 			return fmt.Errorf("resolving source path: %w", err)
@@ -604,7 +642,7 @@ func normalizeOutputFormat(format string) (string, error) {
 	case "json":
 		return "json", nil
 	default:
-		return "", fmt.Errorf("unsupported output format: %s", format)
+		return "", fmt.Errorf("unsupported output format %q: use text or json", format)
 	}
 }
 
@@ -629,6 +667,29 @@ func resolveInstallNamesForSelection(repo, assetName, osName, arch, tag string, 
 	}
 
 	return map[string]string{binaries[0]: name}, nil
+}
+
+// extractedDirName is the directory inside a work directory that archives
+// are extracted into.
+const extractedDirName = "extracted"
+
+// newWorkDir creates a directory under downloadDir for one download, named
+// after the repository and the current time plus a random suffix, so runs in
+// the same second or repositories sharing a name never share a directory.
+func newWorkDir(downloadDir, repo string) (string, error) {
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating download dir %s: %w", downloadDir, err)
+	}
+	dir, err := os.MkdirTemp(downloadDir, fmt.Sprintf("%s-%s-*", repo, time.Now().Format("20060102T150405")))
+	if err != nil {
+		return "", fmt.Errorf("creating work dir: %w", err)
+	}
+	// MkdirTemp creates the directory 0700; keep the 0755 previously used,
+	// so an installCommand running as another user can read the payload.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return "", fmt.Errorf("setting work dir permissions: %w", err)
+	}
+	return dir, nil
 }
 
 // checkRawAssetExecutable refuses to install a downloaded non-archive asset

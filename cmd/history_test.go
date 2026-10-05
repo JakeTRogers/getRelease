@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/JakeTRogers/getRelease/internal/history"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestHistoryListEmpty(t *testing.T) {
@@ -29,6 +30,40 @@ func TestHistoryListEmpty(t *testing.T) {
 	}
 	if strings.TrimSpace(out.String()) != "No history records found." {
 		t.Fatalf("history list output = %q, want empty message", out.String())
+	}
+}
+
+func TestHistoryListEmptyJSON(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	if err := historyListCmd.Flags().Set("format", "json"); err != nil {
+		t.Fatalf("set format: %v", err)
+	}
+
+	var out bytes.Buffer
+	historyListCmd.SetOut(&out)
+
+	if err := historyListCmd.RunE(historyListCmd, nil); err != nil {
+		t.Fatalf("history list error: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Fatalf("history list json output = %q, want []", got)
+	}
+}
+
+func TestHistoryListRejectsUnknownFormat(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	if err := historyListCmd.Flags().Set("format", "xml"); err != nil {
+		t.Fatalf("set format: %v", err)
+	}
+	historyListCmd.SetOut(&bytes.Buffer{})
+
+	err := historyListCmd.RunE(historyListCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), `unsupported output format "xml"`) {
+		t.Fatalf("history list error = %v, want unsupported format error", err)
 	}
 }
 
@@ -88,7 +123,7 @@ func TestHistoryListTextShowsPinColumn(t *testing.T) {
 	}
 
 	headerFields := strings.Fields(lines[0])
-	wantHeader := []string{"ID", "OWNER", "REPO", "TAG", "PIN", "BINARIES", "INSTALLED"}
+	wantHeader := []string{"ID", "OWNER", "REPO", "TAG", "PIN", "BINARIES", "INSTALLED", "UPDATED"}
 	if !reflect.DeepEqual(headerFields, wantHeader) {
 		t.Fatalf("history list header = %v, want %v", headerFields, wantHeader)
 	}
@@ -107,6 +142,50 @@ func TestHistoryListTextShowsPinColumn(t *testing.T) {
 	}
 	if got := rows["rec2"]; len(got) < 5 || got[4] != "-" {
 		t.Fatalf("history list unpinned row = %v, want pin level -", got)
+	}
+}
+
+func TestHistoryListShowsAndSortsByUpdated(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	// Written directly, since Store.Add stamps UpdatedAt with the current time.
+	records := historyListSortRecordsFixture(t)
+	records[0].UpdatedAt = time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC) // rec1, installed Mar 3
+	records[1].UpdatedAt = time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)   // rec2, installed Mar 1
+	records[2].UpdatedAt = time.Date(2026, time.March, 2, 0, 0, 0, 0, time.UTC)     // rec3, never upgraded
+	data, err := json.Marshal(map[string]any{"version": 1, "records": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := historyPathForTest(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := historyListCmd.Flags().Set("sort", historyListSortUpdated); err != nil {
+		t.Fatalf("set sort: %v", err)
+	}
+	var out bytes.Buffer
+	historyListCmd.SetOut(&out)
+	if err := historyListCmd.RunE(historyListCmd, nil); err != nil {
+		t.Fatalf("history list error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")[1:]
+	var ids []string
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		ids = append(ids, fields[0])
+		if fields[0] == "rec2" && (fields[len(fields)-2] != "2026-03-01" || fields[len(fields)-1] != "2026-10-01") {
+			t.Errorf("rec2 row = %v, want installed 2026-03-01 and updated 2026-10-01", fields)
+		}
+	}
+	if want := []string{"rec3", "rec1", "rec2"}; !reflect.DeepEqual(ids, want) {
+		t.Errorf("history list --sort updated order = %v, want %v", ids, want)
 	}
 }
 
@@ -273,6 +352,72 @@ func TestHistoryClearForce(t *testing.T) {
 	}
 }
 
+func TestHistoryClearConfirmation(t *testing.T) {
+	tests := []struct {
+		name        string
+		confirm     func(string, bool) (bool, error)
+		wantErr     string
+		wantOutput  string
+		wantRecords int
+	}{
+		{
+			name:        "declined",
+			confirm:     func(string, bool) (bool, error) { return false, nil },
+			wantOutput:  "Aborted.",
+			wantRecords: 1,
+		},
+		{
+			name:        "no terminal",
+			confirm:     func(string, bool) (bool, error) { return false, selector.ErrNotInteractive },
+			wantErr:     "use --force to proceed without the prompt",
+			wantRecords: 1,
+		},
+		{
+			name:        "confirmed",
+			confirm:     func(string, bool) (bool, error) { return true, nil },
+			wantOutput:  "Cleared 1 history records.",
+			wantRecords: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+			useTestCommandDeps(t, nil)
+			setCommandFlag(t, historyClearCmd, "force", "false")
+			installPath := filepath.Join(t.TempDir(), "bin", "tool")
+			writeExecutableFile(t, installPath)
+			writeHistoryRecords(t, []history.Record{newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", installPath)})
+
+			var gotDefault *bool
+			confirmAction = func(prompt string, defaultYes bool) (bool, error) {
+				gotDefault = &defaultYes
+				return tt.confirm(prompt, defaultYes)
+			}
+			var out bytes.Buffer
+			historyClearCmd.SetOut(&out)
+
+			err := historyClearCmd.RunE(historyClearCmd, nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("history clear error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("history clear error: %v", err)
+			}
+			if !strings.Contains(out.String(), tt.wantOutput) {
+				t.Errorf("history clear output = %q, want %q", out.String(), tt.wantOutput)
+			}
+			if gotDefault == nil || *gotDefault {
+				t.Errorf("confirmation prompt default = %v, want no", gotDefault)
+			}
+			if got := len(loadHistoryRecords(t)); got != tt.wantRecords {
+				t.Errorf("history records after clear = %d, want %d", got, tt.wantRecords)
+			}
+		})
+	}
+}
+
 func TestHistoryPruneDryRunAndApply(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
 	presentPath := filepath.Join(t.TempDir(), "bin", "present")
@@ -318,6 +463,7 @@ func TestHistoryPruneDryRunAndApply(t *testing.T) {
 
 func TestHistoryEditAndPath(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "true")
 
 	if err := historyEditCmd.RunE(historyEditCmd, nil); err != nil {
@@ -326,6 +472,10 @@ func TestHistoryEditAndPath(t *testing.T) {
 	path := historyPathForTest(t)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("history file missing after edit: %v", err)
+	}
+	// The editor exited without saving; the created history must still load.
+	if err := history.NewStore(path).Load(); err != nil {
+		t.Fatalf("history created by edit does not load: %v", err)
 	}
 
 	var out bytes.Buffer

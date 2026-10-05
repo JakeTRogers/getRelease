@@ -273,3 +273,21 @@ func TestBestAsset(t *testing.T) {
 		}
 	})
 }
+
+func TestMatchAssetsAcceptsPlatformAliases(t *testing.T) {
+	t.Parallel()
+
+	assets := []github.Asset{
+		{Name: "tool_linux_amd64.tar.gz"},
+		{Name: "tool_linux_arm64.tar.gz"},
+		{Name: "tool_darwin_arm64.tar.gz"},
+	}
+	got := MatchAssets(assets, "Linux", "x86_64", []string{"tar.gz"}, nil)
+	if len(got) != 1 || got[0].Name != "tool_linux_amd64.tar.gz" {
+		t.Errorf("MatchAssets(Linux, x86_64) = %v, want the linux amd64 asset", got)
+	}
+	got = MatchAssets(assets, "macos", "aarch64", []string{"tar.gz"}, nil)
+	if len(got) != 1 || got[0].Name != "tool_darwin_arm64.tar.gz" {
+		t.Errorf("MatchAssets(macos, aarch64) = %v, want the darwin arm64 asset", got)
+	}
+}
