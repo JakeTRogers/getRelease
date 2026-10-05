@@ -157,6 +157,14 @@ func TestResolveUpgradeRecordPaths(t *testing.T) {
 		t.Fatalf("resolveUpgradeRecord() target path = %+v, want cli/tool", rec)
 	}
 
+	rec, err = resolveUpgradeRecord(store, "CLI/Tool", "", "")
+	if err != nil {
+		t.Fatalf("resolveUpgradeRecord() mixed-case target error: %v", err)
+	}
+	if rec.Owner != "cli" || rec.Repo != "tool" {
+		t.Fatalf("resolveUpgradeRecord() mixed-case target = %+v, want cli/tool", rec)
+	}
+
 	if _, err := resolveUpgradeRecord(store, "cli/", "", ""); err == nil || !strings.Contains(err.Error(), "invalid target") {
 		t.Fatalf("resolveUpgradeRecord() invalid target error = %v, want invalid target", err)
 	}

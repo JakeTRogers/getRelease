@@ -574,6 +574,95 @@ func TestRunRootRejectsNonExecutableRawAsset(t *testing.T) {
 	}
 }
 
+func TestCanonicalRepoName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		owner, repo, htmlURL string
+		wantOwner, wantRepo  string
+	}{
+		{
+			name: "adopts GitHub spelling", owner: "JuneGunn", repo: "FZF",
+			htmlURL:   "https://github.com/junegunn/fzf/releases/tag/v0.74.4",
+			wantOwner: "junegunn", wantRepo: "fzf",
+		},
+		{
+			name: "enterprise host", owner: "ACME", repo: "Tool",
+			htmlURL:   "https://acme.ghe.com/acme/tool/releases/tag/v1.0.0",
+			wantOwner: "acme", wantRepo: "tool",
+		},
+		{
+			name: "keeps requested name for a different repository", owner: "old-owner", repo: "old-name",
+			htmlURL:   "https://github.com/new-owner/new-name/releases/tag/v1.0.0",
+			wantOwner: "old-owner", wantRepo: "old-name",
+		},
+		{
+			name: "keeps requested name without a URL", owner: "Cli", repo: "Tool",
+			wantOwner: "Cli", wantRepo: "Tool",
+		},
+	}
+	for _, tt := range tests {
+		gotOwner, gotRepo := canonicalRepoName(tt.owner, tt.repo, &github.Release{HTMLURL: tt.htmlURL})
+		if gotOwner != tt.wantOwner || gotRepo != tt.wantRepo {
+			t.Errorf("%s: canonicalRepoName() = %s/%s, want %s/%s", tt.name, gotOwner, gotRepo, tt.wantOwner, tt.wantRepo)
+		}
+	}
+}
+
+func TestRunRootMixedCaseReinstallUpdatesExistingRecord(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v2.0.0",
+				HTMLURL: "https://github.com/cli/tool/releases/tag/v2.0.0",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://example.invalid/tool_linux_amd64",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatalf("create install dir: %v", err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	writeHistoryRecords(t, []history.Record{
+		newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64", "tool", filepath.Join(installDir, "tool")),
+	})
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "CLI"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "Tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	records := loadHistoryRecords(t)
+	if len(records) != 1 {
+		t.Fatalf("history records = %d, want 1 (no case-variant duplicate): %+v", len(records), records)
+	}
+	if records[0].ID != "rec1" || records[0].Owner != "cli" || records[0].Repo != "tool" || records[0].Tag != "v2.0.0" {
+		t.Fatalf("history record = %+v, want rec1 cli/tool at v2.0.0", records[0])
+	}
+}
+
 func TestRunRootReturnsErrorWhenNoAssetsMatch(t *testing.T) {
 	client := &fakeReleaseClient{
 		getLatestRelease: func(owner, repo string) (*github.Release, error) {

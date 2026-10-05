@@ -207,6 +207,18 @@ func historyHostFor(owner, repo string) string {
 	return host
 }
 
+// canonicalRepoName returns GitHub's spelling of owner/repo, taken from the
+// release's web URL, so history records the same name however the user
+// capitalized it. The requested names are kept when the URL is missing or
+// names a different repository, as after a rename redirect.
+func canonicalRepoName(owner, repo string, rel *github.Release) (string, string) {
+	urlOwner, urlRepo, _, err := github.ParseRepoURL(rel.HTMLURL)
+	if err != nil || !strings.EqualFold(urlOwner, owner) || !strings.EqualFold(urlRepo, repo) {
+		return owner, repo
+	}
+	return urlOwner, urlRepo
+}
+
 // runRoot implements the full download/extract/select/install pipeline.
 func runRoot(cmd *cobra.Command, _ []string) error {
 	owner, repo, host, err := resolveRepo(cmd)
@@ -291,6 +303,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			rel = fallback
 		}
 	}
+	owner, repo = canonicalRepoName(owner, repo, rel)
+	result.Owner = owner
+	result.Repo = repo
 	result.ReleaseTag = rel.TagName
 	result.ReleaseName = rel.DisplayName()
 
