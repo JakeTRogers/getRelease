@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,46 @@ func TestRunListAssetsJSON(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "tool_linux_amd64.tar.gz" {
 		t.Fatalf("runList() assets = %+v, want one tagged asset", got)
+	}
+}
+
+func TestListReleasesMarksPrereleasesAndDrafts(t *testing.T) {
+	published := time.Date(2026, time.October, 4, 0, 0, 0, 0, time.UTC)
+	client := &fakeReleaseClient{
+		listReleases: func(_, _ string, _ int) ([]github.Release, error) {
+			return []github.Release{
+				{TagName: "v2.0.0-draft", Draft: true},
+				{TagName: "nightly", Name: "Nightly build", Prerelease: true, PublishedAt: published},
+				{TagName: "v1.2.3", PublishedAt: published},
+			}, nil
+		},
+	}
+	cmd := &cobra.Command{}
+	addListTestFlags(cmd)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := listReleases(cmd, client, "github.com", "cli", "tool", "text"); err != nil {
+		t.Fatalf("listReleases() error: %v", err)
+	}
+
+	rows := map[string]string{}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			rows[fields[0]] = line
+		}
+	}
+	if !strings.Contains(rows["TAG"], "TYPE") {
+		t.Errorf("header = %q, want a TYPE column", rows["TAG"])
+	}
+	if got := strings.Fields(rows["v2.0.0-draft"]); !reflect.DeepEqual(got, []string{"v2.0.0-draft", "draft", "-", "0"}) {
+		t.Errorf("draft row = %q, want draft type and no date", rows["v2.0.0-draft"])
+	}
+	if !strings.Contains(rows["nightly"], "prerelease") {
+		t.Errorf("prerelease row = %q, want prerelease type", rows["nightly"])
+	}
+	if got := strings.Fields(rows["v1.2.3"]); !reflect.DeepEqual(got, []string{"v1.2.3", "2026-10-04", "0"}) {
+		t.Errorf("release row = %q, want no type", rows["v1.2.3"])
 	}
 }
 

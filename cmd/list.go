@@ -90,7 +90,7 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 		return fmt.Errorf("writing releases heading: %w", err)
 	}
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "TAG\tNAME\tDATE\tASSETS"); err != nil {
+	if _, err := fmt.Fprintln(w, "TAG\tNAME\tTYPE\tDATE\tASSETS"); err != nil {
 		return fmt.Errorf("writing releases table header: %w", err)
 	}
 	for _, r := range releases {
@@ -98,8 +98,11 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 		if name == r.TagName {
 			name = ""
 		}
-		date := r.PublishedAt.Format("2006-01-02")
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", r.TagName, name, date, len(r.Assets)); err != nil {
+		date := "-" // drafts are unpublished
+		if !r.PublishedAt.IsZero() {
+			date = r.PublishedAt.Format("2006-01-02")
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", r.TagName, name, releaseType(r), date, len(r.Assets)); err != nil {
 			return fmt.Errorf("writing release row %s: %w", r.TagName, err)
 		}
 	}
@@ -110,6 +113,18 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 		return fmt.Errorf("writing releases footer: %w", err)
 	}
 	return nil
+}
+
+// releaseType labels releases that `getRelease` does not install by default.
+func releaseType(r github.Release) string {
+	switch {
+	case r.Draft:
+		return "draft"
+	case r.Prerelease:
+		return "prerelease"
+	default:
+		return ""
+	}
 }
 
 func listAssets(cmd *cobra.Command, client releaseClient, host, owner, repo, tag, format string) error {
