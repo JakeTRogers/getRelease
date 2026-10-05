@@ -14,7 +14,6 @@ import (
 
 	"github.com/JakeTRogers/getRelease/internal/config"
 	"github.com/JakeTRogers/getRelease/internal/history"
-	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 var historyCmd = &cobra.Command{
@@ -348,17 +347,15 @@ var historyClearCmd = &cobra.Command{
 			return nil
 		}
 
-		if !force {
-			ok, err := selector.Confirm(fmt.Sprintf("Clear all %d history records?", n), false)
-			if err != nil {
-				return err
+		ok, err := confirmDestructive(fmt.Sprintf("Clear all %d history records?", n), force)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted."); err != nil {
+				return fmt.Errorf("writing clear abort message: %w", err)
 			}
-			if !ok {
-				if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted."); err != nil {
-					return fmt.Errorf("writing clear abort message: %w", err)
-				}
-				return nil
-			}
+			return nil
 		}
 
 		// Create an empty store and save it (truncates history)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"cmp"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/viper"
 
 	internalconfig "github.com/JakeTRogers/getRelease/internal/config"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestParseConfigValue(t *testing.T) {
@@ -308,5 +310,92 @@ func TestConfigShowFormats(t *testing.T) {
 		if !strings.HasPrefix(out.String(), tt.wantPrefix) {
 			t.Errorf("config show --format %s output = %q, want prefix %q", tt.format, out.String(), tt.wantPrefix)
 		}
+	}
+}
+
+func TestConfigResetAllConfirmation(t *testing.T) {
+	tests := []struct {
+		name       string
+		noFile     bool
+		force      string
+		confirm    func(string, bool) (bool, error)
+		wantErr    string
+		wantOutput string
+		wantFile   bool
+	}{
+		{
+			name:       "missing file does not prompt",
+			noFile:     true,
+			wantOutput: "Config file does not exist",
+		},
+		{
+			name:       "declined",
+			confirm:    func(string, bool) (bool, error) { return false, nil },
+			wantOutput: "Aborted.",
+			wantFile:   true,
+		},
+		{
+			name:     "no terminal",
+			confirm:  func(string, bool) (bool, error) { return false, selector.ErrNotInteractive },
+			wantErr:  "use --force to proceed without the prompt",
+			wantFile: true,
+		},
+		{
+			name:       "confirmed",
+			confirm:    func(string, bool) (bool, error) { return true, nil },
+			wantOutput: "Removed config file",
+		},
+		{
+			name:       "force skips the prompt",
+			force:      "true",
+			wantOutput: "Removed config file",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+			useTestCommandDeps(t, nil)
+			setCommandFlag(t, configResetCmd, "force", cmp.Or(tt.force, "false"))
+
+			cfgPath, err := internalconfig.ConfigFilePath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tt.noFile {
+				if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(cfgPath, []byte("cooldown: 3\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			confirmAction = func(prompt string, defaultYes bool) (bool, error) {
+				if tt.confirm == nil {
+					t.Fatalf("unexpected confirmation prompt %q", prompt)
+				}
+				if defaultYes {
+					t.Errorf("confirmation prompt defaults to yes, want no")
+				}
+				return tt.confirm(prompt, defaultYes)
+			}
+			var out bytes.Buffer
+			configResetCmd.SetOut(&out)
+
+			err = configResetCmd.RunE(configResetCmd, nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("config reset error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("config reset error: %v", err)
+			}
+			if !strings.Contains(out.String(), tt.wantOutput) {
+				t.Errorf("config reset output = %q, want %q", out.String(), tt.wantOutput)
+			}
+			if _, statErr := os.Stat(cfgPath); (statErr == nil) != tt.wantFile {
+				t.Errorf("config file exists = %v, want %v", statErr == nil, tt.wantFile)
+			}
+		})
 	}
 }

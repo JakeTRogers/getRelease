@@ -212,3 +212,22 @@ func writeExecutableFile(t *testing.T, path string) {
 		t.Fatalf("write executable file: %v", err)
 	}
 }
+
+// setCommandFlag sets a flag on a shared command and restores its default when
+// the test ends, so package-level commands do not leak state between tests.
+func setCommandFlag(t *testing.T, cmd *cobra.Command, name, value string) {
+	t.Helper()
+	flag := cmd.Flags().Lookup(name)
+	if flag == nil {
+		t.Fatalf("%s has no flag %q", cmd.CommandPath(), name)
+	}
+	if err := flag.Value.Set(value); err != nil {
+		t.Fatalf("set %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if err := flag.Value.Set(flag.DefValue); err != nil {
+			t.Errorf("reset %s: %v", name, err)
+		}
+		flag.Changed = false
+	})
+}

@@ -1,9 +1,10 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -293,28 +294,26 @@ var configResetCmd = &cobra.Command{
 			return fmt.Errorf("resolving config file path: %w", err)
 		}
 
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to delete the config file at %s? [y/N]: ", cfgPath); err != nil {
-			return fmt.Errorf("writing reset prompt: %w", err)
+		if _, err := os.Stat(cfgPath); errors.Is(err, fs.ErrNotExist) {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Config file does not exist: %s\n", cfgPath); err != nil {
+				return fmt.Errorf("writing missing config message: %w", err)
+			}
+			return nil
 		}
-		reader := bufio.NewReader(os.Stdin)
-		resp, _ := reader.ReadString('\n')
-		resp = strings.TrimSpace(strings.ToLower(resp))
-		proceed := resp == "y" || resp == "yes"
 
-		if !proceed {
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted"); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		ok, err := confirmDestructive(fmt.Sprintf("Delete the config file at %s?", cfgPath), force)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Aborted."); err != nil {
 				return fmt.Errorf("writing reset abort message: %w", err)
 			}
 			return nil
 		}
 
 		if err := os.Remove(cfgPath); err != nil {
-			if os.IsNotExist(err) {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Config file does not exist: %s\n", cfgPath); err != nil {
-					return fmt.Errorf("writing missing config message: %w", err)
-				}
-				return nil
-			}
 			return fmt.Errorf("removing config file: %w", err)
 		}
 
@@ -347,6 +346,7 @@ func init() {
 	configGetCmd.ValidArgsFunction = completeConfigKeyArg
 	configSetCmd.ValidArgsFunction = completeConfigKeyArg
 	configResetCmd.ValidArgsFunction = completeConfigKeyArg
+	configResetCmd.Flags().Bool("force", false, "skip confirmation prompt when deleting the config file")
 
 	configCmd.AddCommand(configShowCmd)
 	configCmd.AddCommand(configGetCmd)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/JakeTRogers/getRelease/internal/history"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestHistoryListEmpty(t *testing.T) {
@@ -304,6 +305,72 @@ func TestHistoryClearForce(t *testing.T) {
 	}
 	if records := loadHistoryRecords(t); len(records) != 0 {
 		t.Fatalf("history records after clear = %d, want 0", len(records))
+	}
+}
+
+func TestHistoryClearConfirmation(t *testing.T) {
+	tests := []struct {
+		name        string
+		confirm     func(string, bool) (bool, error)
+		wantErr     string
+		wantOutput  string
+		wantRecords int
+	}{
+		{
+			name:        "declined",
+			confirm:     func(string, bool) (bool, error) { return false, nil },
+			wantOutput:  "Aborted.",
+			wantRecords: 1,
+		},
+		{
+			name:        "no terminal",
+			confirm:     func(string, bool) (bool, error) { return false, selector.ErrNotInteractive },
+			wantErr:     "use --force to proceed without the prompt",
+			wantRecords: 1,
+		},
+		{
+			name:        "confirmed",
+			confirm:     func(string, bool) (bool, error) { return true, nil },
+			wantOutput:  "Cleared 1 history records.",
+			wantRecords: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+			useTestCommandDeps(t, nil)
+			setCommandFlag(t, historyClearCmd, "force", "false")
+			installPath := filepath.Join(t.TempDir(), "bin", "tool")
+			writeExecutableFile(t, installPath)
+			writeHistoryRecords(t, []history.Record{newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", installPath)})
+
+			var gotDefault *bool
+			confirmAction = func(prompt string, defaultYes bool) (bool, error) {
+				gotDefault = &defaultYes
+				return tt.confirm(prompt, defaultYes)
+			}
+			var out bytes.Buffer
+			historyClearCmd.SetOut(&out)
+
+			err := historyClearCmd.RunE(historyClearCmd, nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("history clear error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("history clear error: %v", err)
+			}
+			if !strings.Contains(out.String(), tt.wantOutput) {
+				t.Errorf("history clear output = %q, want %q", out.String(), tt.wantOutput)
+			}
+			if gotDefault == nil || *gotDefault {
+				t.Errorf("confirmation prompt default = %v, want no", gotDefault)
+			}
+			if got := len(loadHistoryRecords(t)); got != tt.wantRecords {
+				t.Errorf("history records after clear = %d, want %d", got, tt.wantRecords)
+			}
+		})
 	}
 }
 
