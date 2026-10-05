@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -27,6 +28,7 @@ const (
 	historyListSortRepo      = "repo"
 	historyListSortBinary    = "binary"
 	historyListSortInstalled = "installed"
+	historyListSortUpdated   = "updated"
 )
 
 var historyListCmd = &cobra.Command{
@@ -70,7 +72,7 @@ var historyListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "ID\tOWNER\tREPO\tTAG\tPIN\tBINARIES\tINSTALLED"); err != nil {
+		if _, err := fmt.Fprintln(w, "ID\tOWNER\tREPO\tTAG\tPIN\tBINARIES\tINSTALLED\tUPDATED"); err != nil {
 			return fmt.Errorf("writing history header: %w", err)
 		}
 		for _, r := range records {
@@ -82,12 +84,8 @@ var historyListCmd = &cobra.Command{
 			if r.PinLevel != history.PinNone {
 				pin = string(r.PinLevel)
 			}
-			installed := ""
-			if !r.InstalledAt.IsZero() {
-				installed = r.InstalledAt.Format("2006-01-02")
-			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.ID, r.Owner, r.Repo, r.Tag, pin, strings.Join(bins, ","), installed); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.ID, r.Owner, r.Repo, r.Tag, pin, strings.Join(bins, ","), historyDate(r.InstalledAt), historyDate(r.UpdatedAt)); err != nil {
 				return fmt.Errorf("writing history record %s: %w", r.ID, err)
 			}
 		}
@@ -98,10 +96,10 @@ var historyListCmd = &cobra.Command{
 func normalizeHistoryListSort(value string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
-	case historyListSortOwner, historyListSortRepo, historyListSortBinary, historyListSortInstalled:
+	case historyListSortOwner, historyListSortRepo, historyListSortBinary, historyListSortInstalled, historyListSortUpdated:
 		return normalized, nil
 	default:
-		return "", fmt.Errorf("invalid sort value %q: must be one of owner, repo, binary, installed", value)
+		return "", fmt.Errorf("invalid sort value %q: must be one of owner, repo, binary, installed, updated", value)
 	}
 }
 
@@ -117,6 +115,8 @@ func sortHistoryRecords(records []history.Record, sortBy string) []history.Recor
 		compare = compareHistoryRecordsByRepo
 	case historyListSortInstalled:
 		compare = compareHistoryRecordsByInstalledAt
+	case historyListSortUpdated:
+		compare = compareHistoryRecordsByUpdatedAt
 	}
 
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -188,6 +188,21 @@ func compareHistoryRecordsByInstalledAt(left, right history.Record) int {
 		return result
 	}
 	return compareHistoryRecordID(left, right)
+}
+
+func compareHistoryRecordsByUpdatedAt(left, right history.Record) int {
+	if result := left.UpdatedAt.Compare(right.UpdatedAt); result != 0 {
+		return result
+	}
+	return compareHistoryRecordsByInstalledAt(left, right)
+}
+
+// historyDate formats a history timestamp as a date, or "" when unset.
+func historyDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02")
 }
 
 func compareHistoryRecordOwner(left, right history.Record) int {
@@ -486,7 +501,7 @@ var historyPathCmd = &cobra.Command{
 func init() {
 	historyCmd.AddCommand(historyListCmd, historyRemoveCmd, historyClearCmd, historyPruneCmd, historyEditCmd, historyPathCmd)
 	historyListCmd.Flags().String("format", "text", "output format: text, json")
-	historyListCmd.Flags().String("sort", historyListSortBinary, "sort by: owner, repo, binary, installed")
+	historyListCmd.Flags().String("sort", historyListSortBinary, "sort by: owner, repo, binary, installed, updated")
 	mustRegisterFlagCompletion(historyListCmd, "sort", completeHistoryListSortValues)
 	mustRegisterFlagCompletion(historyListCmd, "format", completeOutputFormatValues)
 	historyClearCmd.Flags().Bool("force", false, "skip confirmation prompt")

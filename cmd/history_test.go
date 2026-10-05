@@ -123,7 +123,7 @@ func TestHistoryListTextShowsPinColumn(t *testing.T) {
 	}
 
 	headerFields := strings.Fields(lines[0])
-	wantHeader := []string{"ID", "OWNER", "REPO", "TAG", "PIN", "BINARIES", "INSTALLED"}
+	wantHeader := []string{"ID", "OWNER", "REPO", "TAG", "PIN", "BINARIES", "INSTALLED", "UPDATED"}
 	if !reflect.DeepEqual(headerFields, wantHeader) {
 		t.Fatalf("history list header = %v, want %v", headerFields, wantHeader)
 	}
@@ -142,6 +142,50 @@ func TestHistoryListTextShowsPinColumn(t *testing.T) {
 	}
 	if got := rows["rec2"]; len(got) < 5 || got[4] != "-" {
 		t.Fatalf("history list unpinned row = %v, want pin level -", got)
+	}
+}
+
+func TestHistoryListShowsAndSortsByUpdated(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	resetHistoryListFlags(t)
+
+	// Written directly, since Store.Add stamps UpdatedAt with the current time.
+	records := historyListSortRecordsFixture(t)
+	records[0].UpdatedAt = time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC) // rec1, installed Mar 3
+	records[1].UpdatedAt = time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)   // rec2, installed Mar 1
+	records[2].UpdatedAt = time.Date(2026, time.March, 2, 0, 0, 0, 0, time.UTC)     // rec3, never upgraded
+	data, err := json.Marshal(map[string]any{"version": 1, "records": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := historyPathForTest(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := historyListCmd.Flags().Set("sort", historyListSortUpdated); err != nil {
+		t.Fatalf("set sort: %v", err)
+	}
+	var out bytes.Buffer
+	historyListCmd.SetOut(&out)
+	if err := historyListCmd.RunE(historyListCmd, nil); err != nil {
+		t.Fatalf("history list error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")[1:]
+	var ids []string
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		ids = append(ids, fields[0])
+		if fields[0] == "rec2" && (fields[len(fields)-2] != "2026-03-01" || fields[len(fields)-1] != "2026-10-01") {
+			t.Errorf("rec2 row = %v, want installed 2026-03-01 and updated 2026-10-01", fields)
+		}
+	}
+	if want := []string{"rec3", "rec1", "rec2"}; !reflect.DeepEqual(ids, want) {
+		t.Errorf("history list --sort updated order = %v, want %v", ids, want)
 	}
 }
 

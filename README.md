@@ -108,7 +108,7 @@ Inspect tracked installs:
 getRelease history list
 ```
 
-`history list` shows the current pin policy in the `PIN` column using `-`, `patch`, `minor`, or `major`.
+`history list` shows the current pin policy in the `PIN` column using `-`, `patch`, `minor`, or `major`. `INSTALLED` is when a package was first installed and `UPDATED` is when its record last changed, by a reinstall, upgrade, or pin change; `--sort updated` orders by the latter.
 
 Prune history records for binaries that are no longer installed:
 

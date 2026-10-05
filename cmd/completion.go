@@ -251,6 +251,7 @@ func completeHistoryListSortValues(_ *cobra.Command, _ []string, toComplete stri
 		{value: historyListSortOwner, description: "sort by repository owner"},
 		{value: historyListSortRepo, description: "sort by repository name"},
 		{value: historyListSortInstalled, description: "sort by installed date, oldest first"},
+		{value: historyListSortUpdated, description: "sort by last update, oldest first"},
 	}
 
 	completions := make([]cobra.Completion, 0, len(options))

@@ -258,6 +258,7 @@ func TestCompleteHistoryListSortValues(t *testing.T) {
 		"owner\tsort by repository owner",
 		"repo\tsort by repository name",
 		"installed\tsort by installed date, oldest first",
+		"updated\tsort by last update, oldest first",
 	}
 	if !reflect.DeepEqual([]string(got), want) {
 		t.Fatalf("completeHistoryListSortValues() = %v, want %v", got, want)
