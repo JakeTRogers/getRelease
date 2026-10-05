@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -713,6 +717,66 @@ func TestClient_ListReleases_Truncate(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("ListReleases() returned %d releases, want 2", len(got))
+	}
+}
+
+func TestClient_ListReleases_Paginates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		available int
+		limit     int
+		wantCount int
+		wantPages []string
+	}{
+		{name: "limit spans three pages", available: 300, limit: 250, wantCount: 250, wantPages: []string{"1", "2", "3"}},
+		{name: "repository runs out first", available: 130, limit: 250, wantCount: 130, wantPages: []string{"1", "2"}},
+		{name: "limit within one page", available: 300, limit: 100, wantCount: 100, wantPages: []string{"1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			all := make([]Release, tt.available)
+			for i := range all {
+				all[i] = Release{TagName: fmt.Sprintf("v1.0.%d", tt.available-i)}
+			}
+			var mu sync.Mutex
+			var pages []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				mu.Lock()
+				pages = append(pages, r.URL.Query().Get("page"))
+				mu.Unlock()
+				if perPage != 100 {
+					t.Errorf("per_page = %d, want 100", perPage)
+				}
+				start := min((page-1)*perPage, len(all))
+				end := min(start+perPage, len(all))
+				if err := json.NewEncoder(w).Encode(all[start:end]); err != nil {
+					t.Errorf("encode page: %v", err)
+				}
+			}))
+			defer srv.Close()
+
+			client := NewClientWithHTTP(srv.Client(), srv.URL)
+			got, err := client.ListReleases("owner", "repo", tt.limit)
+			if err != nil {
+				t.Fatalf("ListReleases() error: %v", err)
+			}
+			if len(got) != tt.wantCount {
+				t.Errorf("ListReleases() returned %d releases, want %d", len(got), tt.wantCount)
+			}
+			if len(got) > 0 && got[0].TagName != all[0].TagName {
+				t.Errorf("ListReleases()[0] = %q, want newest %q", got[0].TagName, all[0].TagName)
+			}
+			if !reflect.DeepEqual(pages, tt.wantPages) {
+				t.Errorf("requested pages %v, want %v", pages, tt.wantPages)
+			}
+		})
 	}
 }
 

@@ -262,26 +262,33 @@ func (c *Client) GetReleaseByTag(owner, repo, tag string) (*Release, error) {
 	return &release, nil
 }
 
-// ListReleases fetches up to limit releases for a repository, ordered by most recent first.
+// maxReleasesPerPage is the largest page size the GitHub releases API serves.
+const maxReleasesPerPage = 100
+
+// ListReleases fetches up to limit releases for a repository, ordered by most
+// recent first, requesting further pages of up to 100 releases as needed.
 func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) {
 	if limit <= 0 {
 		limit = 30
 	}
-
-	perPage := limit
-	if perPage > 100 {
-		perPage = 100
-	}
-
-	path := fmt.Sprintf("%s?per_page=%d", repoReleasePath(owner, repo, "releases"), perPage)
-	body, err := c.doRequest(path)
-	if err != nil {
-		return nil, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
-	}
+	perPage := min(limit, maxReleasesPerPage)
 
 	var releases []Release
-	if err := json.Unmarshal(body, &releases); err != nil {
-		return nil, fmt.Errorf("decoding releases: %w", err)
+	for page := 1; len(releases) < limit; page++ {
+		path := fmt.Sprintf("%s?per_page=%d&page=%d", repoReleasePath(owner, repo, "releases"), perPage, page)
+		body, err := c.doRequest(path)
+		if err != nil {
+			return nil, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+		}
+
+		var batch []Release
+		if err := json.Unmarshal(body, &batch); err != nil {
+			return nil, fmt.Errorf("decoding releases: %w", err)
+		}
+		releases = append(releases, batch...)
+		if len(batch) < perPage {
+			break // last page
+		}
 	}
 
 	if len(releases) > limit {
