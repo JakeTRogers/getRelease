@@ -520,6 +520,67 @@ func TestClient_NotFoundExplanations(t *testing.T) {
 	}
 }
 
+func TestAlternateTag(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"v1.2.3":     "1.2.3",
+		"V1.2.3":     "1.2.3",
+		"1.2.3":      "v1.2.3",
+		"2026-09-21": "v2026-09-21",
+		"nightly":    "",
+		"v":          "",
+		"version-1":  "",
+		"":           "",
+	}
+	for tag, want := range tests {
+		if got := alternateTag(tag); got != want {
+			t.Errorf("alternateTag(%q) = %q, want %q", tag, got, want)
+		}
+	}
+}
+
+func TestClient_GetReleaseByTagTriesAlternateSpelling(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	for _, tag := range []string{"v0.24.0", "1.2.3"} {
+		mux.HandleFunc("/repos/o/r/releases/tags/"+tag, func(w http.ResponseWriter, _ *http.Request) {
+			if err := json.NewEncoder(w).Encode(Release{TagName: tag}); err != nil {
+				t.Errorf("encode release: %v", err)
+			}
+		})
+	}
+	mux.HandleFunc("/repos/o/r/releases", func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode([]Release{{TagName: "v0.24.0"}}); err != nil {
+			t.Errorf("encode releases: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := NewClientWithHTTP(srv.Client(), srv.URL)
+
+	for requested, want := range map[string]string{"0.24.0": "v0.24.0", "v1.2.3": "1.2.3", "v0.24.0": "v0.24.0"} {
+		got, err := client.GetReleaseByTag("o", "r", requested)
+		if err != nil {
+			t.Errorf("GetReleaseByTag(%q) error: %v", requested, err)
+			continue
+		}
+		if got.TagName != want {
+			t.Errorf("GetReleaseByTag(%q) = %q, want %q", requested, got.TagName, want)
+		}
+	}
+
+	_, err := client.GetReleaseByTag("o", "r", "2.0.0")
+	if err == nil || err.Error() != "release 2.0.0 in o/r not found (also tried v2.0.0)" {
+		t.Errorf("GetReleaseByTag(2.0.0) error = %v, want both spellings reported", err)
+	}
+	_, err = client.GetReleaseByTag("o", "r", "nightly")
+	if err == nil || err.Error() != "release nightly in o/r not found" {
+		t.Errorf("GetReleaseByTag(nightly) error = %v, want no alternate spelling", err)
+	}
+}
+
 func TestRelease_DisplayName(t *testing.T) {
 	t.Parallel()
 

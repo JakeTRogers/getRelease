@@ -910,6 +910,48 @@ func TestRunRootDownloadOnlyExtraction(t *testing.T) {
 	}
 }
 
+func TestRunRootReportsAlternateTagSpelling(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+	useTestCommandDeps(t, &fakeReleaseClient{
+		// The client resolved the requested "1.2.3" to the "v1.2.3" tag.
+		getReleaseByTag: func(_, _, tag string) (*github.Release, error) {
+			return &github.Release{TagName: "v" + tag, Assets: []github.Asset{{
+				Name:        "tool_linux_amd64",
+				DownloadURL: "https://example.invalid/tool_linux_amd64",
+			}}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	})
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "tag": "1.2.3"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+	if !strings.Contains(out.String(), "Fetching 1.2.3 release for cli/tool...\n  tag 1.2.3 not found, using v1.2.3\n") {
+		t.Fatalf("runRoot() output = %q, want tag fallback note under the heading", out.String())
+	}
+	if records := loadHistoryRecords(t); len(records) != 1 || records[0].Tag != "v1.2.3" {
+		t.Fatalf("history = %+v, want the resolved tag v1.2.3 recorded", records)
+	}
+}
+
 func TestRunRootReturnsErrorWhenNoAssetsMatch(t *testing.T) {
 	client := &fakeReleaseClient{
 		getLatestRelease: func(owner, repo string) (*github.Release, error) {

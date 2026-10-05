@@ -286,16 +286,40 @@ func (c *Client) GetLatestRelease(owner, repo string) (*Release, error) {
 	return &release, nil
 }
 
-// GetReleaseByTag fetches a specific release by its tag name.
+// GetReleaseByTag fetches a specific release by its tag name. Version tags
+// are written both with and without a leading "v", so when tag is not found
+// the other form is tried; the returned release's TagName is the tag found.
 func (c *Client) GetReleaseByTag(owner, repo, tag string) (*Release, error) {
+	release, err := c.getReleaseByTag(owner, repo, tag)
+	if !isNotFound(err) {
+		return release, err
+	}
+	alternate := alternateTag(tag)
+	if alternate != "" {
+		release, err := c.getReleaseByTag(owner, repo, alternate)
+		if !isNotFound(err) {
+			return release, err
+		}
+	}
+
+	// Distinguish a missing tag from a missing repository.
+	if _, listErr := c.ListReleases(owner, repo, 1); listErr != nil {
+		return nil, listErr
+	}
+	notFound := &NotFoundError{Resource: fmt.Sprintf("release %s in %s/%s", tag, owner, repo)}
+	if alternate != "" {
+		return nil, fmt.Errorf("%w (also tried %s)", notFound, alternate)
+	}
+	return nil, notFound
+}
+
+// getReleaseByTag fetches the release for exactly tag, returning a bare
+// *NotFoundError when there is none.
+func (c *Client) getReleaseByTag(owner, repo, tag string) (*Release, error) {
 	path := repoReleasePath(owner, repo, "releases", "tags", tag)
 	body, err := c.doRequest(path)
 	if isNotFound(err) {
-		// Distinguish a missing tag from a missing repository.
-		if _, listErr := c.ListReleases(owner, repo, 1); listErr != nil {
-			return nil, listErr
-		}
-		return nil, &NotFoundError{Resource: fmt.Sprintf("release %s in %s/%s", tag, owner, repo)}
+		return nil, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching release %s for %s/%s: %w", tag, owner, repo, err)
@@ -306,6 +330,21 @@ func (c *Client) GetReleaseByTag(owner, repo, tag string) (*Release, error) {
 		return nil, fmt.Errorf("decoding release: %w", err)
 	}
 	return &release, nil
+}
+
+// alternateTag returns the other spelling of a version tag: without its
+// leading "v" ("v1.2.3" -> "1.2.3") or with one ("1.2.3" -> "v1.2.3"). It
+// returns "" for tags that do not start with a version number.
+func alternateTag(tag string) string {
+	isDigit := func(b byte) bool { return b >= '0' && b <= '9' }
+	switch {
+	case len(tag) > 1 && (tag[0] == 'v' || tag[0] == 'V') && isDigit(tag[1]):
+		return tag[1:]
+	case len(tag) > 0 && isDigit(tag[0]):
+		return "v" + tag
+	default:
+		return ""
+	}
 }
 
 // maxReleasesPerPage is the largest page size the GitHub releases API serves.

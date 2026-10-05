@@ -353,6 +353,11 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		if _, err := fmt.Fprintf(out, "Fetching %s release for %s/%s...\n", which, owner, repo); err != nil {
 			return fmt.Errorf("writing release heading: %w", err)
 		}
+		if tag != "" && rel.TagName != tag {
+			if _, err := fmt.Fprintf(out, "  tag %s not found, using %s\n", tag, rel.TagName); err != nil {
+				return fmt.Errorf("writing tag fallback message: %w", err)
+			}
+		}
 		if cd := result.Cooldown; cd != nil {
 			if _, err := fmt.Fprintf(out, "  release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", cd.SkippedTag, cd.SkippedAgeDays, cd.Days, rel.TagName); err != nil {
 				return fmt.Errorf("writing cooldown fallback message: %w", err)
