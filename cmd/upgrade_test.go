@@ -112,6 +112,59 @@ func TestRunUpgradeUnpinnedUsesLatestRelease(t *testing.T) {
 	}
 }
 
+func TestResolveUpgradeReleaseUnpinnedDoesNotDowngrade(t *testing.T) {
+	tests := []struct {
+		name        string
+		installed   string
+		latest      string
+		wantRelease string // empty means unchanged
+	}{
+		{name: "prerelease newer than latest", installed: "v0.75.0-rc1", latest: "v0.74.4"},
+		{name: "stable newer than latest", installed: "v2.0.0", latest: "v1.9.5"},
+		{name: "prerelease of latest upgrades", installed: "v1.0.0-rc.1", latest: "v1.0.0", wantRelease: "v1.0.0"},
+		{name: "larger numeric prerelease upgrades", installed: "v1.0.0-90000000000000000000", latest: "v1.0.0-100000000000000000000", wantRelease: "v1.0.0-100000000000000000000"},
+		{name: "smaller numeric prerelease does not downgrade", installed: "v1.0.0-100000000000000000000", latest: "v1.0.0-90000000000000000000"},
+		{name: "non-semver tags upgrade", installed: "nightly", latest: "v1.0.0", wantRelease: "v1.0.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeReleaseClient{
+				getLatestRelease: func(_, _ string) (*github.Release, error) {
+					return &github.Release{TagName: tt.latest}, nil
+				},
+				listReleases: func(_, _ string, _ int) ([]github.Release, error) {
+					t.Fatal("ListReleases() should not be called for unpinned upgrades")
+					return nil, nil
+				},
+			}
+			rec := &history.Record{Owner: "cli", Repo: "tool", Tag: tt.installed}
+
+			cmd := &cobra.Command{}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+
+			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor("cli"))
+			if err != nil {
+				t.Fatalf("resolveUpgradeRelease() error: %v", err)
+			}
+			if tt.wantRelease == "" {
+				if !unchanged || release != nil {
+					t.Fatalf("resolveUpgradeRelease() = (%+v, %v), want unchanged", release, unchanged)
+				}
+				want := "Installed " + tt.installed + " is newer than the latest release (" + tt.latest + "); not downgrading"
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("resolveUpgradeRelease() output = %q, want %q", out.String(), want)
+				}
+				return
+			}
+			if unchanged || release == nil || release.TagName != tt.wantRelease {
+				t.Fatalf("resolveUpgradeRelease() = (%+v, %v), want %s", release, unchanged, tt.wantRelease)
+			}
+		})
+	}
+}
+
 func TestPresentHistoryRecords(t *testing.T) {
 	t.Parallel()
 

@@ -379,6 +379,14 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 			}
 			return nil, true, nil
 		}
+		// The installed release can be newer than "latest", e.g. a
+		// prerelease installed with --tag; upgrading would downgrade it.
+		if c, ok := semver.CompareTags(release.TagName, rec.Tag); ok && c < 0 {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Installed %s is newer than the latest release (%s); not downgrading\n", rec.Tag, release.TagName); err != nil {
+				return nil, false, fmt.Errorf("writing newer-installed message: %w", err)
+			}
+			return nil, true, nil
+		}
 
 		if policy.enabled() && !policy.releaseEligible(release) {
 			releases, err := client.ListReleases(owner, repo, 100)
@@ -487,18 +495,16 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 }
 
 // upgradeFallbackIsNewer reports whether a cooldown fallback release is an
-// actual upgrade over the currently installed tag. Semver tags are compared
-// numerically; otherwise the release list's publish order (most-recent-first)
-// decides, so a non-semver fallback never downgrades an installed release
-// that was published after it.
+// actual upgrade over the currently installed tag. Semver tags, including
+// prereleases, are compared by precedence; otherwise the release list's
+// publish order (most-recent-first) decides, so a non-semver fallback never
+// downgrades an installed release that was published after it.
 func upgradeFallbackIsNewer(releases []github.Release, fallback *github.Release, currentTag string) bool {
 	if fallback.TagName == currentTag {
 		return false
 	}
-	fallbackVersion, fallbackErr := semver.Parse(fallback.TagName)
-	currentVersion, currentErr := semver.Parse(currentTag)
-	if fallbackErr == nil && currentErr == nil {
-		return fallbackVersion.Compare(currentVersion) > 0
+	if c, ok := semver.CompareTags(fallback.TagName, currentTag); ok {
+		return c > 0
 	}
 	for i := range releases {
 		switch releases[i].TagName {
