@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -367,6 +368,76 @@ func TestFindBinaries_MultipleTypes(t *testing.T) {
 	}
 	if len(bins) != 4 {
 		t.Fatalf("expected 4 binaries, got %d: %v", len(bins), bins)
+	}
+}
+
+// writeFixtures writes each relative path in files with the given content and
+// mode 0755 under dir.
+func writeFixtures(t *testing.T, dir string, files map[string][]byte) {
+	t.Helper()
+	for rel, content := range files {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestFindBinaries_SkipsLibrariesAndHelperScripts(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+
+	elf := append([]byte{0x7f, 'E', 'L', 'F'}, make([]byte, 50)...)
+	machO := append([]byte{0xcf, 0xfa, 0xed, 0xfe}, make([]byte, 50)...)
+	script := []byte("#!/bin/sh\necho hi\n")
+	writeFixtures(t, tmp, map[string][]byte{
+		"tool":                         elf,
+		"tool-tmux":                    script,
+		"runtime/grammars/rust.so":     elf,
+		"lib/libfoo.so.1.2":            elf,
+		"lib/libbar.dylib":             machO,
+		"lib/foo.dll":                  {'M', 'Z', 0},
+		"install-man-page.sh":          script,
+		"contrib/completion/tool.bash": script,
+		"contrib/completion/tool.fish": script,
+		"contrib/completion/tool.ps1":  script,
+	})
+
+	bins, err := FindBinaries(tmp)
+	if err != nil {
+		t.Fatalf("FindBinaries error: %v", err)
+	}
+	want := []string{"tool", "tool-tmux"}
+	if !reflect.DeepEqual(bins, want) {
+		t.Fatalf("FindBinaries() = %v, want %v", bins, want)
+	}
+}
+
+func TestFindBinaries_PrefersBinDirectory(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+
+	elf := append([]byte{0x7f, 'E', 'L', 'F'}, make([]byte, 50)...)
+	writeFixtures(t, tmp, map[string][]byte{
+		"app-linux/bin/app":                  elf,
+		"app-linux/bin/app-helper":           []byte("#!/bin/sh\n"),
+		"app-linux/libexec/app-worker":       elf,
+		"app-linux/share/app/scripts/runner": []byte("#!/bin/sh\n"),
+	})
+
+	bins, err := FindBinaries(tmp)
+	if err != nil {
+		t.Fatalf("FindBinaries error: %v", err)
+	}
+	want := []string{
+		filepath.Join("app-linux", "bin", "app"),
+		filepath.Join("app-linux", "bin", "app-helper"),
+	}
+	if !reflect.DeepEqual(bins, want) {
+		t.Fatalf("FindBinaries() = %v, want %v", bins, want)
 	}
 }
 

@@ -9,16 +9,34 @@ import (
 	"github.com/JakeTRogers/getRelease/internal/github"
 )
 
-// skipExtensions are file extensions always excluded from asset candidates.
+// skipExtensions are file extensions always excluded from asset candidates:
+// checksums, signatures, metadata, and formats getRelease cannot install.
 var skipExtensions = map[string]bool{
-	".sha256": true,
-	".sha512": true,
-	".md5":    true,
-	".sig":    true,
-	".asc":    true,
-	".sbom":   true,
-	".pem":    true,
-	".txt":    true,
+	// checksums
+	".sha1":      true,
+	".sha256":    true,
+	".sha512":    true,
+	".md5":       true,
+	".sha256sum": true,
+	".sha512sum": true,
+	".md5sum":    true,
+	".b3":        true,
+	// signatures and certificates
+	".sig":      true,
+	".asc":      true,
+	".minisig":  true,
+	".sigstore": true,
+	".pem":      true,
+	// metadata
+	".sbom": true,
+	".txt":  true,
+	// update deltas, editor extensions, and app packages
+	".zsync":   true,
+	".bsdiff":  true,
+	".vsix":    true,
+	".flatpak": true,
+	".snap":    true,
+	".dmg":     true,
 }
 
 // ShouldSkipAsset returns true if the asset name matches a known non-installable extension.

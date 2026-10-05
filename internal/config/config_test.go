@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -31,6 +32,12 @@ func TestSetDefaults(t *testing.T) {
 	}
 	if owners := v.GetStringSlice("trustedOwners"); len(owners) != 0 {
 		t.Errorf("trustedOwners default = %v, want empty", owners)
+	}
+	excludes := v.GetStringSlice("assetPreferences.excludePatterns")
+	for _, pattern := range []string{"*.deb", "*.rpm", "*.pkg.tar.zst"} {
+		if !slices.Contains(excludes, pattern) {
+			t.Errorf("assetPreferences.excludePatterns default = %v, want it to contain %q", excludes, pattern)
+		}
 	}
 }
 

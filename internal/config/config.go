@@ -67,7 +67,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("assetPreferences.arch", "")
 	v.SetDefault("assetPreferences.formats", []string{"tar.gz", "zip"})
 	v.SetDefault("assetPreferences.excludePatterns", []string{
-		"*.deb", "*.rpm", "*.apk", "*.msi", "*.pkg",
+		"*.deb", "*.rpm", "*.apk", "*.msi", "*.pkg", "*.pkg.tar.zst",
 	})
 }
 

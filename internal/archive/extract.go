@@ -263,7 +263,11 @@ func extractZipFile(f *zip.File, destAbs string) (err error) {
 }
 
 // FindBinaries walks dir and returns paths (relative to dir) that look like executables.
-// It skips common documentation/config files and detects binaries by magic bytes or exec bit.
+// It skips documentation and config files, shared libraries and object files, and
+// scripts with a shell extension (helpers and completions; commands that are scripts
+// are conventionally extensionless), and detects binaries by magic bytes or exec bit.
+// When any binaries are inside a "bin" directory, only those are returned, since
+// archives laid out as bin/, lib/, share/ keep supporting executables elsewhere.
 func FindBinaries(dir string) ([]string, error) {
 	var bins []string
 
@@ -280,6 +284,19 @@ func FindBinaries(dir string) ([]string, error) {
 		".cfg":  {},
 		".conf": {},
 		".css":  {},
+		// shared libraries and object files
+		".so":    {},
+		".dylib": {},
+		".dll":   {},
+		".a":     {},
+		".o":     {},
+		".lib":   {},
+		// helper scripts and shell completions
+		".sh":   {},
+		".bash": {},
+		".zsh":  {},
+		".fish": {},
+		".ps1":  {},
 	}
 
 	skipPrefixes := []string{"license", "readme", "changelog", "authors", "contributing", "notice"}
@@ -315,6 +332,10 @@ func FindBinaries(dir string) ([]string, error) {
 				return nil
 			}
 		}
+		// Skip versioned shared libraries such as libfoo.so.1.2
+		if strings.Contains(lname, ".so.") {
+			return nil
+		}
 
 		// Read file header for magic bytes
 		isBin, err := LooksExecutable(path)
@@ -347,7 +368,29 @@ func FindBinaries(dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", dir, err)
 	}
+
+	var inBinDir []string
+	for _, bin := range bins {
+		if isInBinDir(bin) {
+			inBinDir = append(inBinDir, bin)
+		}
+	}
+	if len(inBinDir) > 0 {
+		slog.Debug("find binaries: keeping only bin directory entries", "kept", len(inBinDir), "found", len(bins))
+		return inBinDir, nil
+	}
 	return bins, nil
+}
+
+// isInBinDir reports whether the relative path rel has a "bin" directory
+// component.
+func isInBinDir(rel string) bool {
+	for _, part := range strings.Split(filepath.Dir(rel), string(os.PathSeparator)) {
+		if strings.EqualFold(part, "bin") {
+			return true
+		}
+	}
+	return false
 }
 
 // executableMagics are file headers of native executables and scripts:
