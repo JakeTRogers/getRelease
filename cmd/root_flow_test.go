@@ -952,6 +952,46 @@ func TestRunRootReportsAlternateTagSpelling(t *testing.T) {
 	}
 }
 
+func TestRunRootNormalizesPlatformOverrides(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(_, _ string) (*github.Release, error) {
+			return &github.Release{TagName: "v1.0.0", Assets: []github.Asset{
+				{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/amd64"},
+				{Name: "tool_linux_arm64", DownloadURL: "https://example.invalid/arm64"},
+			}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	})
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	cfgViper.Set("assetPreferences.os", "Linux")
+	cfgViper.Set("assetPreferences.arch", "aarch64")
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+	records := loadHistoryRecords(t)
+	if len(records) != 1 || records[0].Asset.Name != "tool_linux_arm64" || records[0].OS != "linux" || records[0].Arch != "arm64" {
+		t.Fatalf("history = %+v, want the arm64 asset recorded as linux/arm64", records)
+	}
+}
+
 func TestRunRootReturnsErrorWhenNoAssetsMatch(t *testing.T) {
 	client := &fakeReleaseClient{
 		getLatestRelease: func(owner, repo string) (*github.Release, error) {

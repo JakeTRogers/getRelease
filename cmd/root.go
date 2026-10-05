@@ -292,12 +292,12 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	// Determine OS/Arch (allow config overrides)
 	var osName, arch string
 	if cfg.AssetPreferences.OS != "" {
-		osName = cfg.AssetPreferences.OS
+		osName = platform.NormalizeOS(cfg.AssetPreferences.OS)
 	} else {
 		osName = platform.Detect().OS
 	}
 	if cfg.AssetPreferences.Arch != "" {
-		arch = cfg.AssetPreferences.Arch
+		arch = platform.NormalizeArch(cfg.AssetPreferences.Arch)
 	} else {
 		arch = platform.Detect().Arch
 	}

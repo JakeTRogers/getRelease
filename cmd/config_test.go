@@ -437,3 +437,30 @@ func TestConfigGetFormatsValues(t *testing.T) {
 		t.Errorf("config get assetPreferences = %q, want a YAML mapping with formats", out.String())
 	}
 }
+
+func TestConfigSetNormalizesPlatform(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+
+	tests := []struct {
+		key, value, stored, output string
+	}{
+		{key: "assetPreferences.arch", value: "x86_64", stored: "amd64", output: `Set assetPreferences.arch = amd64 (normalized from "x86_64")`},
+		{key: "assetPreferences.os", value: "macOS", stored: "darwin", output: `Set assetPreferences.os = darwin (normalized from "macOS")`},
+		{key: "assetPreferences.arch", value: "arm64", stored: "arm64", output: "Set assetPreferences.arch = arm64"},
+		{key: "assetPreferences.os", value: "", stored: "", output: "Set assetPreferences.os = "},
+	}
+	for _, tt := range tests {
+		var out bytes.Buffer
+		configSetCmd.SetOut(&out)
+		if err := configSetCmd.RunE(configSetCmd, []string{tt.key, tt.value}); err != nil {
+			t.Fatalf("config set %s %q error: %v", tt.key, tt.value, err)
+		}
+		if got := strings.TrimRight(out.String(), "\n"); got != tt.output {
+			t.Errorf("config set %s %q output = %q, want %q", tt.key, tt.value, got, tt.output)
+		}
+		if got := cfgViper.GetString(tt.key); got != tt.stored {
+			t.Errorf("config set %s %q stored %q, want %q", tt.key, tt.value, got, tt.stored)
+		}
+	}
+}

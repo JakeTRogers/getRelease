@@ -103,7 +103,7 @@ func FormatScore(name string, formats []string) int {
 }
 
 func libcScore(name, osName string) int {
-	if osName != "linux" {
+	if NormalizeOS(osName) != "linux" {
 		return 0
 	}
 

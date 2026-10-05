@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"reflect"
 	"runtime"
 	"testing"
 )
@@ -79,5 +80,40 @@ func TestArchKeywords(t *testing.T) {
 				t.Errorf("ArchKeywords(%q) = %v, want to contain %q", tt.arch, kw, tt.contains)
 			}
 		})
+	}
+}
+
+func TestNormalizeOSAndArch(t *testing.T) {
+	t.Parallel()
+
+	osTests := map[string]string{
+		"linux": "linux", "Linux": "linux", "macOS": "darwin", "osx": "darwin", "mac": "darwin",
+		"darwin": "darwin", "win": "windows", "Windows": "windows", "freebsd": "freebsd", "": "",
+	}
+	for in, want := range osTests {
+		if got := NormalizeOS(in); got != want {
+			t.Errorf("NormalizeOS(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	archTests := map[string]string{
+		"amd64": "amd64", "x86_64": "amd64", "X64": "amd64", "aarch64": "arm64", "ARM64": "arm64",
+		"i386": "386", "i686": "386", "riscv64": "riscv64", "x86": "x86", "": "",
+	}
+	for in, want := range archTests {
+		if got := NormalizeArch(in); got != want {
+			t.Errorf("NormalizeArch(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestKeywordsAcceptAliases(t *testing.T) {
+	t.Parallel()
+
+	if got, want := OSKeywords("macOS"), OSKeywords("darwin"); !reflect.DeepEqual(got, want) {
+		t.Errorf("OSKeywords(macOS) = %v, want %v", got, want)
+	}
+	if got, want := ArchKeywords("X86_64"), ArchKeywords("amd64"); !reflect.DeepEqual(got, want) {
+		t.Errorf("ArchKeywords(X86_64) = %v, want %v", got, want)
 	}
 }

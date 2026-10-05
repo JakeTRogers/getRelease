@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	internalconfig "github.com/JakeTRogers/getRelease/internal/config"
+	"github.com/JakeTRogers/getRelease/internal/platform"
 )
 
 // configCmd is the parent for configuration management subcommands.
@@ -132,13 +133,28 @@ var configSetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		displayValue := value
+		// Store Go's names for OS and architecture so asset matching
+		// recognizes aliases such as x86_64 or macos.
+		var normalized string
+		switch key {
+		case "assetPreferences.os":
+			normalized = platform.NormalizeOS(value)
+		case "assetPreferences.arch":
+			normalized = platform.NormalizeArch(value)
+		}
+		if normalized != "" {
+			parsedValue = normalized
+			if normalized != value {
+				displayValue = fmt.Sprintf("%s (normalized from %q)", normalized, value)
+			}
+		}
 
 		cfgViper.Set(key, parsedValue)
 		if err := internalconfig.SetValue(key, parsedValue); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
 
-		displayValue := value
 		if key == "token" && value != "" {
 			displayValue = "<redacted>"
 		}
