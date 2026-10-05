@@ -11,31 +11,33 @@ import (
 )
 
 var pinCmd = &cobra.Command{
-	Use:   "pin <target>",
+	Use:   "pin [<target> | --owner <owner> --repo <repo>]",
 	Short: "Pin an installed target to its current patch, minor, or major line",
 	Long: `Pin a previously installed target so future upgrades stay within the selected semver ceiling.
-The default level, patch, locks the target to its current exact release.`,
-	Args: cobra.ExactArgs(1),
+The default level, patch, locks the target to its current exact release.
+
+The target is an installed binary name or owner/repo; --owner and --repo together select it instead.`,
+	Args: validateTargetArgs,
 	RunE: runPin,
 }
 
 var unpinCmd = &cobra.Command{
-	Use:   "unpin <target>",
+	Use:   "unpin [<target> | --owner <owner> --repo <repo>]",
 	Short: "Remove version pinning from an installed target",
-	Args:  cobra.ExactArgs(1),
+	Args:  validateTargetArgs,
 	RunE:  runUnpin,
 }
 
 func init() {
 	pinCmd.Flags().String("level", string(history.PinPatch), "pin level: patch, minor, major")
-	pinCmd.Flags().StringP("owner", "o", "", "GitHub owner/org (skip history lookup)")
-	pinCmd.Flags().StringP("repo", "r", "", "GitHub repository (skip history lookup)")
+	pinCmd.Flags().StringP("owner", "o", "", ownerTargetFlagUsage)
+	pinCmd.Flags().StringP("repo", "r", "", repoTargetFlagUsage)
 	pinCmd.ValidArgsFunction = completeInstalledUpgradeTargets
 	registerOwnerRepoHistoryCompletions(pinCmd, true)
 	mustRegisterFlagCompletion(pinCmd, "level", completePinLevels)
 
-	unpinCmd.Flags().StringP("owner", "o", "", "GitHub owner/org (skip history lookup)")
-	unpinCmd.Flags().StringP("repo", "r", "", "GitHub repository (skip history lookup)")
+	unpinCmd.Flags().StringP("owner", "o", "", ownerTargetFlagUsage)
+	unpinCmd.Flags().StringP("repo", "r", "", repoTargetFlagUsage)
 	unpinCmd.ValidArgsFunction = completeInstalledUpgradeTargets
 	registerOwnerRepoHistoryCompletions(unpinCmd, true)
 
@@ -57,7 +59,7 @@ func runPin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading history: %w", err)
 	}
 
-	rec, err := resolveUpgradeRecord(store, args[0], ownerFlag, repoFlag)
+	rec, err := resolveUpgradeRecord(store, targetArg(args), ownerFlag, repoFlag)
 	if err != nil {
 		return err
 	}
@@ -115,7 +117,7 @@ func runUnpin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading history: %w", err)
 	}
 
-	rec, err := resolveUpgradeRecord(store, args[0], ownerFlag, repoFlag)
+	rec, err := resolveUpgradeRecord(store, targetArg(args), ownerFlag, repoFlag)
 	if err != nil {
 		return err
 	}

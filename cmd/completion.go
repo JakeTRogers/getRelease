@@ -36,7 +36,9 @@ func completeInstalledUpgradeTargets(cmd *cobra.Command, args []string, toComple
 	}
 
 	upgradeAll, _ := cmd.Flags().GetBool("all")
-	if upgradeAll {
+	ownerFlag, _ := cmd.Flags().GetString("owner")
+	repoFlag, _ := cmd.Flags().GetString("repo")
+	if upgradeAll || ownerFlag != "" || repoFlag != "" {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 

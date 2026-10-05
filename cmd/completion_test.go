@@ -354,6 +354,17 @@ func TestLoadHistoryRecordsForCompletionAndInstalledTargets(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("completeInstalledUpgradeTargets() with --all = %v, want no completions", got)
 	}
+
+	byRepo := &cobra.Command{}
+	byRepo.Flags().String("owner", "", "")
+	byRepo.Flags().String("repo", "", "")
+	if err := byRepo.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner flag: %v", err)
+	}
+	got, _ = completeInstalledUpgradeTargets(byRepo, nil, "")
+	if len(got) != 0 {
+		t.Fatalf("completeInstalledUpgradeTargets() with --owner = %v, want no completions", got)
+	}
 }
 
 func TestPinAndUnpinCommandTargetCompletions(t *testing.T) {

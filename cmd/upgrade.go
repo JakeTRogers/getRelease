@@ -22,11 +22,13 @@ import (
 )
 
 var upgradeCmd = &cobra.Command{
-	Use:   "upgrade <target> | --all",
+	Use:   "upgrade [<target> | --owner <owner> --repo <repo> | --all]",
 	Short: "Upgrade a previously installed binary",
-	Long:  `Upgrade a previously installed binary using install history, or use --all to upgrade every installed package still present on disk.`,
-	Args:  validateUpgradeArgs,
-	RunE:  runUpgrade,
+	Long: `Upgrade a previously installed binary using install history, or use --all to upgrade every installed package still present on disk.
+
+The target is an installed binary name or owner/repo; --owner and --repo together select it instead.`,
+	Args: validateUpgradeArgs,
+	RunE: runUpgrade,
 }
 
 type upgradeMapping struct {
@@ -37,8 +39,8 @@ type upgradeMapping struct {
 }
 
 func init() {
-	upgradeCmd.Flags().StringP("owner", "o", "", "GitHub owner/org (skip history lookup)")
-	upgradeCmd.Flags().StringP("repo", "r", "", "GitHub repository (skip history lookup)")
+	upgradeCmd.Flags().StringP("owner", "o", "", ownerTargetFlagUsage)
+	upgradeCmd.Flags().StringP("repo", "r", "", repoTargetFlagUsage)
 	upgradeCmd.Flags().Bool("all", false, "upgrade all installed packages still present on disk")
 	upgradeCmd.Flags().Bool("dry-run", false, "show what would be upgraded")
 	upgradeCmd.Flags().Int("cooldown", 0, "minimum release age in days (overrides config; 0 disables)")
@@ -62,7 +64,42 @@ func validateUpgradeArgs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return cobra.ExactArgs(1)(cmd, args)
+	return validateTargetArgs(cmd, args)
+}
+
+const (
+	ownerTargetFlagUsage = "GitHub owner/org of the installed target (with --repo, instead of <target>)"
+	repoTargetFlagUsage  = "GitHub repository of the installed target (with --owner, instead of <target>)"
+)
+
+// validateTargetArgs requires an installed target selected by exactly one of:
+// a <target> argument (binary name or owner/repo), or --owner and --repo.
+func validateTargetArgs(cmd *cobra.Command, args []string) error {
+	ownerFlag, _ := cmd.Flags().GetString("owner")
+	repoFlag, _ := cmd.Flags().GetString("repo")
+
+	if ownerFlag == "" && repoFlag == "" {
+		if len(args) != 1 {
+			return fmt.Errorf("specify one installed target as a binary name or owner/repo, or with --owner and --repo (got %d arguments)", len(args))
+		}
+		return nil
+	}
+	if ownerFlag == "" || repoFlag == "" {
+		return errors.New("--owner and --repo must be used together")
+	}
+	if len(args) != 0 {
+		return errors.New("specify the target either as an argument or with --owner and --repo, not both")
+	}
+	return nil
+}
+
+// targetArg returns the positional target, or "" when --owner and --repo
+// select it instead.
+func targetArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
 }
 
 func runUpgrade(cmd *cobra.Command, args []string) error {
@@ -92,7 +129,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		return runUpgradeAll(cmd, store, cfg, dryRun, cds)
 	}
 
-	rec, err := resolveUpgradeRecord(store, args[0], ownerFlag, repoFlag)
+	rec, err := resolveUpgradeRecord(store, targetArg(args), ownerFlag, repoFlag)
 	if err != nil {
 		return err
 	}
