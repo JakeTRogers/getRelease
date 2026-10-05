@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -173,5 +174,97 @@ func TestConfigSetRedactsTokenInConfirmation(t *testing.T) {
 	}
 	if cfgViper.GetString("token") != "super-secret" {
 		t.Errorf("cfgViper token = %q, want %q", cfgViper.GetString("token"), "super-secret")
+	}
+}
+
+func TestCanonicalConfigKey(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"token":                            "token",
+		"TOKEN":                            "token",
+		"installdir":                       "installDir",
+		"ASSETPREFERENCES.FORMATS":         "assetPreferences.formats",
+		"assetpreferences":                 "assetPreferences",
+		"assetPreferences.excludepatterns": "assetPreferences.excludePatterns",
+		"unknown.key":                      "unknown.key",
+		"asset":                            "asset",
+	}
+	for in, want := range tests {
+		if got := canonicalConfigKey(in); got != want {
+			t.Errorf("canonicalConfigKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestConfigGetRedactsTokenInAnyCase(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+	cfgViper.Set("token", "super-secret")
+
+	var out bytes.Buffer
+	configGetCmd.SetOut(&out)
+	if err := configGetCmd.RunE(configGetCmd, []string{"TOKEN"}); err != nil {
+		t.Fatalf("configGetCmd.RunE() error: %v", err)
+	}
+
+	if got := strings.TrimSpace(out.String()); got != "<redacted>" {
+		t.Errorf("config get TOKEN = %q, want <redacted>", got)
+	}
+}
+
+func TestConfigSetPersistsOnlyTheKey(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	t.Setenv("GETRELEASE_TOKEN", "env-secret")
+	t.Setenv("GETRELEASE_INSTALLDIR", "/from/env")
+	useTestCommandDeps(t, nil)
+	if err := internalconfig.Init(cfgViper); err != nil {
+		t.Fatalf("config.Init() error: %v", err)
+	}
+
+	configSetCmd.SetOut(&bytes.Buffer{})
+	if err := configSetCmd.RunE(configSetCmd, []string{"COOLDOWN", "5"}); err != nil {
+		t.Fatalf("configSetCmd.RunE() error: %v", err)
+	}
+
+	cfgPath, err := internalconfig.ConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("reading config file: %v", err)
+	}
+	if got, want := string(data), "cooldown: 5\n"; got != want {
+		t.Errorf("config file = %q, want %q (no env values or defaults)", got, want)
+	}
+}
+
+func TestConfigResetKeyRemovesItFromFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	useTestCommandDeps(t, nil)
+
+	cfgPath, err := internalconfig.ConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("cooldown: 3\ninstallDir: /opt/bin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configResetCmd.SetOut(&bytes.Buffer{})
+	if err := configResetCmd.RunE(configResetCmd, []string{"cooldown"}); err != nil {
+		t.Fatalf("configResetCmd.RunE() error: %v", err)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("reading config file: %v", err)
+	}
+	if got, want := string(data), "installDir: /opt/bin\n"; got != want {
+		t.Errorf("config file = %q, want %q", got, want)
 	}
 }

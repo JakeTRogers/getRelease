@@ -85,7 +85,7 @@ var configGetCmd = &cobra.Command{
 	Short: "Get a specific config value",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		key := args[0]
+		key := canonicalConfigKey(args[0])
 		if !cfgViper.IsSet(key) {
 			return fmt.Errorf("unknown config key: %s", key)
 		}
@@ -107,7 +107,7 @@ var configSetCmd = &cobra.Command{
 	Short: "Set a config value",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		key := args[0]
+		key := canonicalConfigKey(args[0])
 		value := args[1]
 
 		parsedValue, err := parseConfigValue(key, value)
@@ -116,7 +116,7 @@ var configSetCmd = &cobra.Command{
 		}
 
 		cfgViper.Set(key, parsedValue)
-		if err := internalconfig.Save(cfgViper); err != nil {
+		if err := internalconfig.SetValue(key, parsedValue); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
 
@@ -129,6 +129,22 @@ var configSetCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// canonicalConfigKey maps a key typed in any case (Viper ignores case) to its
+// documented camelCase spelling, so token redaction checks match "TOKEN" too
+// and the config file is written with consistent key names. A parent key such
+// as "assetpreferences" maps to its prefix; unknown keys are returned as-is.
+func canonicalConfigKey(key string) string {
+	for _, k := range configKeys {
+		if strings.EqualFold(k.value, key) {
+			return k.value
+		}
+		if len(k.value) > len(key) && k.value[len(key)] == '.' && strings.EqualFold(k.value[:len(key)], key) {
+			return k.value[:len(key)]
+		}
+	}
+	return key
 }
 
 func parseConfigValue(key, raw string) (any, error) {
@@ -209,7 +225,7 @@ var configEditCmd = &cobra.Command{
 		}
 
 		if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-			if err := os.WriteFile(cfgPath, []byte{}, 0o644); err != nil {
+			if err := os.WriteFile(cfgPath, []byte{}, 0o600); err != nil {
 				return fmt.Errorf("creating config file: %w", err)
 			}
 		}
@@ -233,7 +249,7 @@ var configResetCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 1 {
-			key := args[0]
+			key := canonicalConfigKey(args[0])
 
 			fresh := viper.New()
 			internalconfig.SetDefaults(fresh)
@@ -244,7 +260,7 @@ var configResetCmd = &cobra.Command{
 			}
 
 			cfgViper.Set(key, def)
-			if err := internalconfig.Save(cfgViper); err != nil {
+			if err := internalconfig.UnsetValue(key); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
 

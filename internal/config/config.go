@@ -3,11 +3,13 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/viper"
+	"go.yaml.in/yaml/v3"
 )
 
 // AssetPreferences controls how release assets are filtered and ranked.
@@ -126,17 +128,133 @@ func Load(v *viper.Viper) (*AppConfig, error) {
 	return &cfg, nil
 }
 
-// Save writes the given config to the config file, creating the directory if needed.
-func Save(v *viper.Viper) error {
+// SetValue persists a single key to the config file, leaving the file's other
+// entries untouched. Defaults and environment variables are never written:
+// GETRELEASE_TOKEN would otherwise leak into the file, and persisted defaults
+// would shadow future default changes. Keys are matched case-insensitively,
+// as Viper does, so a lowercased key written by an older version is replaced
+// rather than duplicated.
+func SetValue(key string, value any) error {
+	return updateConfigFile(func(settings map[string]any) {
+		setNestedKey(settings, strings.Split(key, "."), value)
+	})
+}
+
+// UnsetValue removes a key from the config file so its default applies again.
+func UnsetValue(key string) error {
+	return updateConfigFile(func(settings map[string]any) {
+		unsetNestedKey(settings, strings.Split(key, "."))
+	})
+}
+
+func updateConfigFile(mutate func(map[string]any)) error {
 	cfgPath, err := ConfigFilePath()
 	if err != nil {
 		return fmt.Errorf("resolving config file path: %w", err)
 	}
 
-	dir := filepath.Dir(cfgPath)
+	settings, err := readConfigFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	mutate(settings)
+	return writeConfigFile(cfgPath, settings)
+}
+
+func readConfigFile(path string) (map[string]any, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]any{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+
+	var settings map[string]any
+	if err := yaml.Unmarshal(data, &settings); err != nil {
+		return nil, fmt.Errorf("parsing config file %s: %w", path, err)
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	return settings, nil
+}
+
+// writeConfigFile writes settings via a temporary file renamed into place.
+// os.CreateTemp creates the file with mode 0600, so the config file, which
+// may hold a token, is only readable by its owner.
+func writeConfigFile(path string, settings map[string]any) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
 
-	return v.WriteConfigAs(cfgPath)
+	data, err := yaml.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	tmpf, err := os.CreateTemp(dir, "config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp config file: %w", err)
+	}
+	tmpPath := tmpf.Name()
+
+	if _, err := tmpf.Write(data); err != nil {
+		return fmt.Errorf("writing temp config file: %w", errors.Join(err, tmpf.Close(), os.Remove(tmpPath)))
+	}
+	if err := tmpf.Close(); err != nil {
+		return fmt.Errorf("closing temp config file: %w", errors.Join(err, os.Remove(tmpPath)))
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("renaming config file into place: %w", errors.Join(err, os.Remove(tmpPath)))
+	}
+	return nil
+}
+
+// takeKey removes every key in m equal to name ignoring case and returns the
+// value of the last one removed.
+func takeKey(m map[string]any, name string) any {
+	var existing any
+	for k, v := range m {
+		if strings.EqualFold(k, name) {
+			existing = v
+			delete(m, k)
+		}
+	}
+	return existing
+}
+
+func setNestedKey(m map[string]any, parts []string, value any) {
+	existing := takeKey(m, parts[0])
+	if len(parts) == 1 {
+		m[parts[0]] = value
+		return
+	}
+	child, ok := existing.(map[string]any)
+	if !ok {
+		child = map[string]any{}
+	}
+	setNestedKey(child, parts[1:], value)
+	m[parts[0]] = child
+}
+
+func unsetNestedKey(m map[string]any, parts []string) {
+	if len(parts) == 1 {
+		takeKey(m, parts[0])
+		return
+	}
+	for k, v := range m {
+		if !strings.EqualFold(k, parts[0]) {
+			continue
+		}
+		child, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		unsetNestedKey(child, parts[1:])
+		if len(child) == 0 {
+			delete(m, k)
+		}
+	}
 }
