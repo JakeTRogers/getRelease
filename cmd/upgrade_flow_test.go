@@ -234,7 +234,7 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	if !strings.Contains(out.String(), "Pin policy: patch (locked to exact release v1.0.0)") {
 		t.Fatalf("runUpgradeAll() output = %q, want patch pin policy", out.String())
 	}
-	if !strings.Contains(errOut.String(), "Failed upgrading cli/failing: fetching latest release for cli/failing: boom") {
+	if !strings.Contains(errOut.String(), "Failed upgrading cli/failing: boom") {
 		t.Fatalf("runUpgradeAll() stderr = %q, want failure line", errOut.String())
 	}
 }

@@ -69,7 +69,7 @@ func listReleases(cmd *cobra.Command, client releaseClient, host, owner, repo, f
 
 	releases, err := client.ListReleases(owner, repo, limit)
 	if err != nil {
-		return fmt.Errorf("listing releases: %w", err)
+		return err
 	}
 
 	if format == "json" {
@@ -130,7 +130,7 @@ func releaseType(r github.Release) string {
 func listAssets(cmd *cobra.Command, client releaseClient, host, owner, repo, tag, format string) error {
 	release, err := client.GetReleaseByTag(owner, repo, tag)
 	if err != nil {
-		return fmt.Errorf("fetching release %s: %w", tag, err)
+		return err
 	}
 
 	if format == "json" {

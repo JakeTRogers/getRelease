@@ -232,10 +232,49 @@ func joinURLPath(parts []string) string {
 	return path
 }
 
+func isNotFound(err error) bool {
+	var notFound *NotFoundError
+	return errors.As(err, &notFound)
+}
+
+// repoNotFound reports a repository that does not exist or that the client's
+// credentials cannot see; GitHub answers 404 for both.
+func (c *Client) repoNotFound(owner, repo string) error {
+	err := &NotFoundError{Resource: fmt.Sprintf("repository %s/%s", owner, repo)}
+	if c.token == "" {
+		return fmt.Errorf("%w; if it is private, set GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or run 'gh auth login'", err)
+	}
+	return fmt.Errorf("%w, or the configured token cannot access it", err)
+}
+
+// explainMissingLatest explains a 404 for a repository's latest release: the
+// repository is missing or inaccessible, has no published releases, or has
+// only prereleases, which GitHub never reports as the latest release.
+// Authenticated clients may need to page past drafts to find a published release.
+func (c *Client) explainMissingLatest(owner, repo string) error {
+	for page := 1; ; page++ {
+		releases, err := c.listReleasesPage(owner, repo, maxReleasesPerPage, page)
+		if err != nil {
+			return err
+		}
+		for _, r := range releases {
+			if !r.Draft {
+				return fmt.Errorf("%s/%s has no stable release, only prereleases (newest: %s); request a prerelease by its tag to install it", owner, repo, r.TagName)
+			}
+		}
+		if len(releases) < maxReleasesPerPage {
+			return fmt.Errorf("%s/%s has no published releases", owner, repo)
+		}
+	}
+}
+
 // GetLatestRelease fetches the latest published release for a repository.
 func (c *Client) GetLatestRelease(owner, repo string) (*Release, error) {
 	path := repoReleasePath(owner, repo, "releases", "latest")
 	body, err := c.doRequest(path)
+	if isNotFound(err) {
+		return nil, c.explainMissingLatest(owner, repo)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching latest release for %s/%s: %w", owner, repo, err)
 	}
@@ -251,6 +290,13 @@ func (c *Client) GetLatestRelease(owner, repo string) (*Release, error) {
 func (c *Client) GetReleaseByTag(owner, repo, tag string) (*Release, error) {
 	path := repoReleasePath(owner, repo, "releases", "tags", tag)
 	body, err := c.doRequest(path)
+	if isNotFound(err) {
+		// Distinguish a missing tag from a missing repository.
+		if _, listErr := c.ListReleases(owner, repo, 1); listErr != nil {
+			return nil, listErr
+		}
+		return nil, &NotFoundError{Resource: fmt.Sprintf("release %s in %s/%s", tag, owner, repo)}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching release %s for %s/%s: %w", tag, owner, repo, err)
 	}
@@ -275,15 +321,9 @@ func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) 
 
 	var releases []Release
 	for page := 1; len(releases) < limit; page++ {
-		path := fmt.Sprintf("%s?per_page=%d&page=%d", repoReleasePath(owner, repo, "releases"), perPage, page)
-		body, err := c.doRequest(path)
+		batch, err := c.listReleasesPage(owner, repo, perPage, page)
 		if err != nil {
-			return nil, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
-		}
-
-		var batch []Release
-		if err := json.Unmarshal(body, &batch); err != nil {
-			return nil, fmt.Errorf("decoding releases: %w", err)
+			return nil, err
 		}
 		releases = append(releases, batch...)
 		if len(batch) < perPage {
@@ -293,6 +333,23 @@ func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) 
 
 	if len(releases) > limit {
 		releases = releases[:limit]
+	}
+	return releases, nil
+}
+
+func (c *Client) listReleasesPage(owner, repo string, perPage, page int) ([]Release, error) {
+	path := fmt.Sprintf("%s?per_page=%d&page=%d", repoReleasePath(owner, repo, "releases"), perPage, page)
+	body, err := c.doRequest(path)
+	if isNotFound(err) {
+		return nil, c.repoNotFound(owner, repo)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+	}
+
+	var releases []Release
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return nil, fmt.Errorf("decoding releases: %w", err)
 	}
 	return releases, nil
 }

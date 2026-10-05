@@ -312,7 +312,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if tag != "" {
 		rel, err = client.GetReleaseByTag(owner, repo, tag)
 		if err != nil {
-			return fmt.Errorf("fetching release: %w", err)
+			return err
 		}
 		if err := policy.checkRelease(rel); err != nil {
 			return err
@@ -320,12 +320,12 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	} else {
 		rel, err = client.GetLatestRelease(owner, repo)
 		if err != nil {
-			return fmt.Errorf("fetching release: %w", err)
+			return err
 		}
 		if policy.enabled() && !policy.releaseEligible(rel) {
 			releases, err := client.ListReleases(owner, repo, 100)
 			if err != nil {
-				return fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+				return err
 			}
 			fallback, err := findCooldownFallback(releases, owner, repo, policy)
 			if err != nil {

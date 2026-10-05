@@ -417,7 +417,7 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 	case history.PinNone:
 		release, err := client.GetLatestRelease(owner, repo)
 		if err != nil {
-			return nil, false, fmt.Errorf("fetching latest release for %s/%s: %w", owner, repo, err)
+			return nil, false, err
 		}
 
 		if release.TagName == rec.Tag {
@@ -438,7 +438,7 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 		if policy.enabled() && !policy.releaseEligible(release) {
 			releases, err := client.ListReleases(owner, repo, 100)
 			if err != nil {
-				return nil, false, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+				return nil, false, err
 			}
 			fallback, err := findCooldownFallback(releases, owner, repo, policy)
 			if err != nil {
@@ -480,7 +480,7 @@ func resolveUpgradeRelease(cmd *cobra.Command, client releaseClient, rec *histor
 
 		releases, err := client.ListReleases(owner, repo, 100)
 		if err != nil {
-			return nil, false, fmt.Errorf("listing releases for %s/%s: %w", owner, repo, err)
+			return nil, false, err
 		}
 
 		bestIndex := -1
