@@ -1,3 +1,18 @@
+## v1.4.3 (2026-10-04)
+
+### Fix
+
+- order cooldown output and recognize secondary rate limits
+- **root**: report binaries a reinstall stops tracking
+- **archive**: ignore libraries and helper scripts when finding binaries
+- **history**: match owner and repo case-insensitively
+- **upgrade**: don't downgrade releases newer than latest
+- **install**: replace binaries atomically in CopyInstaller
+- **github**: replace total download timeout with a stall timeout
+- **archive**: decompress single-file .gz, .bz2, and .xz assets
+- **upgrade**: match binaries whose names change between releases
+- **config**: persist only the changed key when saving config
+
 ## v1.4.2 (2026-09-07)
 
 ### Fix
