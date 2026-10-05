@@ -2,7 +2,9 @@ package install
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -187,6 +189,91 @@ func TestCommandInstaller_FailedCommand(t *testing.T) {
 	ci := &CommandInstaller{Command: "false {source} {target}"}
 	if err := ci.Install(src, filepath.Join(t.TempDir(), "dst")); err == nil {
 		t.Fatal("expected error for command that fails")
+	}
+}
+
+func TestCopyInstaller_ReplacesExistingTarget(t *testing.T) {
+	t.Parallel()
+
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destDir := t.TempDir()
+	dst := filepath.Join(destDir, "tool")
+	if err := os.WriteFile(dst, []byte("old binary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&CopyInstaller{}).Install(src, dst); err != nil {
+		t.Fatalf("CopyInstaller.Install failed: %v", err)
+	}
+
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(b) != "new" {
+		t.Fatalf("target content = %q, want %q", b, "new")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o755 {
+			t.Errorf("target mode = %o, want 755", perm)
+		}
+	}
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("install dir has %d entries, want only the target (temp file left behind?)", len(entries))
+	}
+}
+
+func TestCopyInstaller_ReplacesRunningBinary(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("text file busy is Linux-specific")
+	}
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not available")
+	}
+	sleepBin, err := os.ReadFile(sleepPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "running")
+	if err := os.WriteFile(dst, sleepBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	running := exec.Command(dst, "30")
+	if err := running.Start(); err != nil {
+		t.Fatalf("start target binary: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = running.Process.Kill()
+		_ = running.Wait()
+	})
+
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.WriteFile(src, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&CopyInstaller{}).Install(src, dst); err != nil {
+		t.Fatalf("CopyInstaller.Install over running binary failed: %v", err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(b) != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("target was not replaced")
 	}
 }
 
