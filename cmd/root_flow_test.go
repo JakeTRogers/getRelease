@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -468,6 +469,108 @@ func TestRunRootPrefersBestAssetAmongMultipleMatches(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "tool_linux_amd64.tar.gz (auto-selected, preferred match)") {
 		t.Fatalf("runRoot() output = %q, want preferred asset selection", out.String())
+	}
+}
+
+func TestRunRootDecompressesSingleFileAsset(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	script := []byte("#!/bin/sh\necho test\n")
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "2026-09-21",
+				Assets: []github.Asset{{
+					Name:        "tool-x86_64-unknown-linux-gnu.gz",
+					DownloadURL: "https://example.invalid/tool-x86_64-unknown-linux-gnu.gz",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			if _, err := zw.Write(script); err != nil {
+				return 0, err
+			}
+			if err := zw.Close(); err != nil {
+				return 0, err
+			}
+			return int64(buf.Len()), os.WriteFile(destPath, buf.Bytes(), 0o644)
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatalf("create install dir: %v", err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	cfgViper.Set("autoExtract", true)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(installDir, "tool"))
+	if err != nil {
+		t.Fatalf("installed file missing: %v", err)
+	}
+	if !bytes.Equal(got, script) {
+		t.Fatalf("installed content = %q, want decompressed %q", got, script)
+	}
+}
+
+func TestRunRootRejectsNonExecutableRawAsset(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v1.0.0",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64.zst",
+					DownloadURL: "https://example.invalid/tool_linux_amd64.zst",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			zstd := []byte{0x28, 0xb5, 0x2f, 0xfd, 0, 0}
+			return int64(len(zstd)), os.WriteFile(destPath, zstd, 0o644)
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	installDir := filepath.Join(baseDir, "bin")
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := runRoot(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not look like an executable") {
+		t.Fatalf("runRoot() error = %v, want not-executable error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(installDir, "tool_linux_amd64.zst")); !os.IsNotExist(statErr) {
+		t.Fatalf("raw asset was installed despite the error (stat err: %v)", statErr)
 	}
 }
 

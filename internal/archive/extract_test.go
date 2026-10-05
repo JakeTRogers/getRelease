@@ -2,6 +2,8 @@ package archive
 
 import (
 	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +28,10 @@ func TestIsArchive(t *testing.T) {
 		{"foo.exe", false},
 		{"foo", false},
 		{"Foo.TAR.GZ", true},
+		{"tool-linux-amd64.gz", true},
+		{"tool-linux-amd64.bz2", true},
+		{"tool-linux-amd64.xz", true},
+		{"tool-linux-amd64.zst", false},
 	}
 
 	for _, tc := range cases {
@@ -372,5 +378,122 @@ func TestFindBinaries_EmptyDir(t *testing.T) {
 	}
 	if len(bins) != 0 {
 		t.Fatalf("expected 0 binaries, got %d: %v", len(bins), bins)
+	}
+}
+
+func TestExtractSingleCompressedFile(t *testing.T) {
+	t.Parallel()
+
+	content := []byte("#!/bin/sh\necho hi\n")
+	compressors := []struct {
+		ext  string
+		tool string // system tool that writes ext; empty means gzip from Go
+	}{
+		{ext: ".gz"},
+		{ext: ".bz2", tool: "bzip2"},
+		{ext: ".xz", tool: "xz"},
+	}
+
+	for _, tc := range compressors {
+		t.Run(tc.ext, func(t *testing.T) {
+			t.Parallel()
+
+			srcDir := t.TempDir()
+			plain := filepath.Join(srcDir, "tool-linux-amd64")
+			archivePath := plain + tc.ext
+			if tc.tool == "" {
+				var buf bytes.Buffer
+				zw := gzip.NewWriter(&buf)
+				if _, err := zw.Write(content); err != nil {
+					t.Fatal(err)
+				}
+				if err := zw.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(archivePath, buf.Bytes(), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := exec.LookPath(tc.tool); err != nil {
+					t.Skipf("%s not installed", tc.tool)
+				}
+				if err := os.WriteFile(plain, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command(tc.tool, plain).CombinedOutput(); err != nil {
+					t.Fatalf("%s: %v output: %s", tc.tool, err, out)
+				}
+			}
+
+			dest := t.TempDir()
+			if err := Extract(archivePath, dest); err != nil {
+				t.Fatalf("Extract(%s) error: %v", tc.ext, err)
+			}
+
+			gotPath := filepath.Join(dest, "tool-linux-amd64")
+			got, err := os.ReadFile(gotPath)
+			if err != nil {
+				t.Fatalf("expected decompressed file at %s: %v", gotPath, err)
+			}
+			if !bytes.Equal(got, content) {
+				t.Fatalf("decompressed content = %q, want %q", got, content)
+			}
+			bins, err := FindBinaries(dest)
+			if err != nil {
+				t.Fatalf("FindBinaries error: %v", err)
+			}
+			if len(bins) != 1 || bins[0] != "tool-linux-amd64" {
+				t.Fatalf("FindBinaries() = %v, want [tool-linux-amd64]", bins)
+			}
+		})
+	}
+}
+
+func TestExtractCorruptGzip(t *testing.T) {
+	t.Parallel()
+
+	archivePath := filepath.Join(t.TempDir(), "tool.gz")
+	if err := os.WriteFile(archivePath, []byte("not gzip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Extract(archivePath, t.TempDir()); err == nil {
+		t.Fatal("Extract() error = nil, want gzip error")
+	}
+}
+
+func TestLooksExecutable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		header []byte
+		want   bool
+	}{
+		{"elf", []byte{0x7f, 'E', 'L', 'F', 2, 1}, true},
+		{"mach-o 64-bit little-endian", []byte{0xcf, 0xfa, 0xed, 0xfe, 7, 0}, true},
+		{"mach-o 32-bit little-endian", []byte{0xce, 0xfa, 0xed, 0xfe, 7, 0}, true},
+		{"mach-o big-endian", []byte{0xfe, 0xed, 0xfa, 0xcf, 0, 0}, true},
+		{"mach-o universal", []byte{0xca, 0xfe, 0xba, 0xbe, 0, 0}, true},
+		{"pe", []byte{'M', 'Z', 0x90, 0}, true},
+		{"script", []byte("#!/bin/sh\n"), true},
+		{"gzip", []byte{0x1f, 0x8b, 0x08, 0}, false},
+		{"zstd", []byte{0x28, 0xb5, 0x2f, 0xfd}, false},
+		{"text", []byte("hello"), false},
+		{"empty", nil, false},
+	}
+
+	dir := t.TempDir()
+	for _, tc := range cases {
+		path := filepath.Join(dir, tc.name)
+		if err := os.WriteFile(path, tc.header, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := LooksExecutable(path)
+		if err != nil {
+			t.Fatalf("LooksExecutable(%s) error: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("LooksExecutable(%s) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -417,6 +417,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			bins = nil
 		} else {
 			// downloaded file itself is the binary
+			if err := checkRawAssetExecutable(assetPath, selectedAsset.Name); err != nil {
+				return err
+			}
 			bins = []string{selectedAsset.Name}
 		}
 	}
@@ -575,6 +578,20 @@ func resolveInstallNamesForSelection(repo, assetName, osName, arch, tag string, 
 	}
 
 	return map[string]string{binaries[0]: name}, nil
+}
+
+// checkRawAssetExecutable refuses to install a downloaded non-archive asset
+// that does not look like an executable, such as a file compressed in a
+// format getRelease cannot unpack.
+func checkRawAssetExecutable(path, assetName string) error {
+	ok, err := archive.LooksExecutable(path)
+	if err != nil {
+		return fmt.Errorf("inspecting %s: %w", assetName, err)
+	}
+	if !ok {
+		return fmt.Errorf("asset %s does not look like an executable (no ELF, Mach-O, PE, or #! header); it may use an unsupported archive or compression format, use --download-only to fetch it anyway", assetName)
+	}
+	return nil
 }
 
 func validateInstallName(name string) (string, error) {

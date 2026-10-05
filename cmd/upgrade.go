@@ -313,6 +313,9 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		}
 		maps, missing = buildArchiveUpgradeMappings(*rec, chosen.Name, release.TagName, extractedDir, found)
 	} else {
+		if err := checkRawAssetExecutable(destPath, chosen.Name); err != nil {
+			return false, err
+		}
 		maps, missing = buildSingleAssetUpgradeMappings(*rec, chosen, destPath)
 	}
 
