@@ -400,6 +400,12 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		return false, fmt.Errorf("saving history: %w", err)
 	}
 
+	if !cfg.KeepDownloads && removeWorkDir(workDir) {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Removed download directory %s\n", workDir); err != nil {
+			return false, fmt.Errorf("writing download cleanup message: %w", err)
+		}
+	}
+
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s/%s to %s\n", owner, repo, release.TagName); err != nil {
 		return false, fmt.Errorf("writing upgrade completion: %w", err)
 	}

@@ -23,6 +23,9 @@ func TestSetDefaults(t *testing.T) {
 	if !v.GetBool("autoExtract") {
 		t.Error("autoExtract default should be true")
 	}
+	if v.GetBool("keepDownloads") {
+		t.Error("keepDownloads default should be false")
+	}
 	formats := v.GetStringSlice("assetPreferences.formats")
 	if len(formats) != 2 || formats[0] != "tar.gz" || formats[1] != "zip" {
 		t.Errorf("assetPreferences.formats default = %v, want [tar.gz zip]", formats)

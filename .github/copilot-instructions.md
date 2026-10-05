@@ -49,9 +49,9 @@ internal/selector/selector.go  → Interactive selection and confirmation prompt
 - `getRelease config` inspects and changes persisted configuration.
 - `getRelease completion` emits shell completion scripts with history-backed suggestions.
 
-**Data flow:** install command `owner/repo[@tag]` argument or flags → resolveRepo() → GitHubClient → filter assets → select → download → extract → select binaries → install → history
+**Data flow:** install command `owner/repo[@tag]` argument or flags → resolveRepo() → GitHubClient → filter assets → select → download → extract → select binaries → install → remove work dir → history
 
-**Upgrade flow:** install history → resolve target → fetch latest release → match replacement asset → download/extract → reinstall recorded binaries → update history
+**Upgrade flow:** install history → resolve target → fetch latest release → match replacement asset → download/extract → reinstall recorded binaries → remove work dir → update history
 
 **Exit codes:** `0` = success, `1` = operational error, `2` = user cancelled
 

@@ -28,22 +28,23 @@ import (
 var cfgViper = viper.New()
 
 type rootCommandResult struct {
-	Owner        string          `json:"owner"`
-	Repo         string          `json:"repo"`
-	RequestedTag string          `json:"requestedTag,omitempty"`
-	ReleaseTag   string          `json:"releaseTag"`
-	ReleaseName  string          `json:"releaseName,omitempty"`
-	Asset        github.Asset    `json:"asset"`
-	DownloadPath string          `json:"downloadPath"`
-	DownloadSize int64           `json:"downloadSize"`
-	Extracted    bool            `json:"extracted"`
-	ExtractDir   string          `json:"extractDir,omitempty"`
-	DownloadOnly bool            `json:"downloadOnly"`
-	Binaries     []string        `json:"binaries,omitempty"`
-	Installed    []string        `json:"installed,omitempty"`
-	HistoryPath  string          `json:"historyPath,omitempty"`
-	Untracked    []string        `json:"untracked,omitempty"`
-	Cooldown     *cooldownReport `json:"cooldown,omitempty"`
+	Owner           string          `json:"owner"`
+	Repo            string          `json:"repo"`
+	RequestedTag    string          `json:"requestedTag,omitempty"`
+	ReleaseTag      string          `json:"releaseTag"`
+	ReleaseName     string          `json:"releaseName,omitempty"`
+	Asset           github.Asset    `json:"asset"`
+	DownloadPath    string          `json:"downloadPath"`
+	DownloadSize    int64           `json:"downloadSize"`
+	Extracted       bool            `json:"extracted"`
+	ExtractDir      string          `json:"extractDir,omitempty"`
+	DownloadOnly    bool            `json:"downloadOnly"`
+	DownloadRemoved bool            `json:"downloadRemoved"`
+	Binaries        []string        `json:"binaries,omitempty"`
+	Installed       []string        `json:"installed,omitempty"`
+	HistoryPath     string          `json:"historyPath,omitempty"`
+	Untracked       []string        `json:"untracked,omitempty"`
+	Cooldown        *cooldownReport `json:"cooldown,omitempty"`
 }
 
 // cooldownReport records that the latest release was skipped because it was
@@ -652,6 +653,16 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err := store.Save(); err != nil {
 		return fmt.Errorf("saving history: %w", err)
 	}
+
+	if !cfg.KeepDownloads {
+		result.DownloadRemoved = removeWorkDir(workDir)
+		if result.DownloadRemoved && textOutput {
+			if _, err := fmt.Fprintf(out, "  Removed download directory %s\n", workDir); err != nil {
+				return fmt.Errorf("writing download cleanup message: %w", err)
+			}
+		}
+	}
+
 	result.HistoryPath = histPath
 	if existing != nil {
 		result.Untracked = untrackedBinaries(existing.Binaries, installedPaths)
@@ -752,6 +763,17 @@ func newWorkDir(downloadDir, repo string) (string, error) {
 		return "", fmt.Errorf("setting work dir permissions: %w", err)
 	}
 	return dir, nil
+}
+
+// removeWorkDir deletes a work directory once its binaries are installed and
+// history is saved, and reports whether it succeeded. A failure only warns:
+// the install itself succeeded, and the leftover files are harmless.
+func removeWorkDir(workDir string) bool {
+	if err := os.RemoveAll(workDir); err != nil {
+		slog.Warn("leaving download directory in place", "dir", workDir, "err", err)
+		return false
+	}
+	return true
 }
 
 // checkRawAssetExecutable refuses to install a downloaded non-archive asset

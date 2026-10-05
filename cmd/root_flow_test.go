@@ -368,6 +368,12 @@ func TestRunRootInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	if !strings.Contains(out.String(), "History updated: cli/tool v2.0.0") {
 		t.Fatalf("runRoot() output = %q, want history update message", out.String())
 	}
+	if !strings.Contains(out.String(), "Removed download directory "+workDir) {
+		t.Fatalf("runRoot() output = %q, want download cleanup message", out.String())
+	}
+	if entries, err := os.ReadDir(workDir); err != nil || len(entries) != 0 {
+		t.Fatalf("download dir entries = %v (err: %v), want the work dir removed", entries, err)
+	}
 	if !strings.Contains(out.String(), "Review the release notes: https://github.com/cli/tool/releases/tag/v2.0.0") {
 		t.Fatalf("runRoot() output = %q, want release notes link", out.String())
 	}
@@ -654,6 +660,9 @@ func TestRunRootRejectsNonExecutableRawAsset(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(installDir, "tool_linux_amd64.zst")); !os.IsNotExist(statErr) {
 		t.Fatalf("raw asset was installed despite the error (stat err: %v)", statErr)
 	}
+	if kept, _ := filepath.Glob(filepath.Join(baseDir, "downloads", "*", "tool_linux_amd64.zst")); len(kept) != 1 {
+		t.Fatalf("downloads after failed install = %v, want the asset kept", kept)
+	}
 }
 
 func TestCanonicalRepoName(t *testing.T) {
@@ -904,9 +913,9 @@ func TestNewWorkDir(t *testing.T) {
 }
 
 // archiveRootTest runs the root command against a release whose only asset is
-// a tar.gz containing an executable "tool" script, with autoExtract set as
-// given, and returns the parsed JSON result.
-func archiveRootTest(t *testing.T, autoExtract, downloadOnly bool) (rootCommandResult, string) {
+// a tar.gz containing an executable "tool" script, with the given config
+// settings applied over setTestConfig, and returns the parsed JSON result.
+func archiveRootTest(t *testing.T, settings map[string]any, downloadOnly bool) (rootCommandResult, string) {
 	t.Helper()
 	baseDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
@@ -927,7 +936,9 @@ func archiveRootTest(t *testing.T, autoExtract, downloadOnly bool) (rootCommandR
 		t.Fatal(err)
 	}
 	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
-	cfgViper.Set("autoExtract", autoExtract)
+	for key, value := range settings {
+		cfgViper.Set(key, value)
+	}
 
 	cmd := &cobra.Command{}
 	addRootTestFlags(cmd)
@@ -949,7 +960,7 @@ func archiveRootTest(t *testing.T, autoExtract, downloadOnly bool) (rootCommandR
 }
 
 func TestRunRootInstallsArchiveWithAutoExtractDisabled(t *testing.T) {
-	result, installDir := archiveRootTest(t, false, false)
+	result, installDir := archiveRootTest(t, map[string]any{"autoExtract": false}, false)
 
 	if !result.Extracted || result.ExtractDir != filepath.Join(filepath.Dir(result.DownloadPath), "extracted") {
 		t.Fatalf("result = extracted %v into %q, want extraction into the work dir's extracted/", result.Extracted, result.ExtractDir)
@@ -964,7 +975,7 @@ func TestRunRootInstallsArchiveWithAutoExtractDisabled(t *testing.T) {
 }
 
 func TestRunRootDownloadOnlyExtraction(t *testing.T) {
-	result, _ := archiveRootTest(t, true, true)
+	result, _ := archiveRootTest(t, map[string]any{"autoExtract": true}, true)
 	wantDir := filepath.Join(filepath.Dir(result.DownloadPath), "extracted")
 	if !result.Extracted || result.ExtractDir != wantDir {
 		t.Fatalf("autoExtract on: extracted %v into %q, want %q", result.Extracted, result.ExtractDir, wantDir)
@@ -973,12 +984,105 @@ func TestRunRootDownloadOnlyExtraction(t *testing.T) {
 		t.Fatalf("extracted file missing: %v", err)
 	}
 
-	result, _ = archiveRootTest(t, false, true)
+	result, _ = archiveRootTest(t, map[string]any{"autoExtract": false}, true)
 	if result.Extracted || result.ExtractDir != "" {
 		t.Fatalf("autoExtract off: extracted %v into %q, want no extraction", result.Extracted, result.ExtractDir)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(result.DownloadPath), "extracted")); !os.IsNotExist(err) {
 		t.Fatalf("extracted dir exists with autoExtract off (stat err: %v)", err)
+	}
+}
+
+func TestRunRootDownloadCleanup(t *testing.T) {
+	tests := []struct {
+		name         string
+		settings     map[string]any
+		downloadOnly bool
+		wantRemoved  bool
+	}{
+		{name: "removed after install", wantRemoved: true},
+		{name: "kept with keepDownloads", settings: map[string]any{"keepDownloads": true}},
+		{name: "kept with download-only", settings: map[string]any{"autoExtract": true}, downloadOnly: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, _ := archiveRootTest(t, tt.settings, tt.downloadOnly)
+			if result.DownloadRemoved != tt.wantRemoved {
+				t.Fatalf("downloadRemoved = %v, want %v", result.DownloadRemoved, tt.wantRemoved)
+			}
+
+			workDir := filepath.Dir(result.DownloadPath)
+			_, err := os.Stat(workDir)
+			if tt.wantRemoved {
+				if !os.IsNotExist(err) {
+					t.Fatalf("work dir %s still exists after install (stat err: %v)", workDir, err)
+				}
+				if _, err := os.Stat(filepath.Dir(workDir)); err != nil {
+					t.Fatalf("download dir removed along with the work dir: %v", err)
+				}
+				return
+			}
+			for _, path := range []string{result.DownloadPath, filepath.Join(result.ExtractDir, "tool")} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("downloaded file missing: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestRunRootKeepsDownloadWhenHistorySaveFails(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			baseDir := t.TempDir()
+			t.Setenv("XDG_DATA_HOME", baseDir)
+
+			// Load sees no history, but Save cannot create the dangling symlink's target.
+			if err := os.Symlink(filepath.Join(baseDir, "missing-history"), filepath.Dir(historyPathForTest(t))); err != nil {
+				t.Fatalf("block history directory: %v", err)
+			}
+
+			var assetPath string
+			useTestCommandDeps(t, &fakeReleaseClient{
+				getLatestRelease: func(owner, repo string) (*github.Release, error) {
+					return &github.Release{TagName: "v1.0.0", Assets: []github.Asset{{Name: "tool_linux_amd64.tar.gz"}}}, nil
+				},
+				downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+					assetPath = destPath
+					return writeTarGz(t, destPath, map[string][]byte{"tool": []byte("#!/bin/sh\nexit 0\n")}), nil
+				},
+			})
+			installDir := filepath.Join(baseDir, "bin")
+			if err := os.MkdirAll(installDir, 0o755); err != nil {
+				t.Fatalf("create install dir: %v", err)
+			}
+			setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+
+			cmd := &cobra.Command{}
+			addRootTestFlags(cmd)
+			for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "format": format} {
+				if err := cmd.Flags().Set(flag, value); err != nil {
+					t.Fatalf("set %s: %v", flag, err)
+				}
+			}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+
+			if err := runRoot(cmd, nil); err == nil || !strings.Contains(err.Error(), "saving history:") {
+				t.Fatalf("runRoot() error = %v, want history save failure", err)
+			}
+			for _, path := range []string{assetPath, filepath.Join(filepath.Dir(assetPath), extractedDirName, "tool"), filepath.Join(installDir, "tool")} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("recovery file %s missing after history save failure: %v", path, err)
+				}
+			}
+			if strings.Contains(out.String(), "Removed download directory") || strings.Contains(out.String(), "History updated:") {
+				t.Fatalf("runRoot() output = %q, want no cleanup or success message", out.String())
+			}
+			if format == "json" && out.Len() != 0 {
+				t.Fatalf("runRoot() output = %q, want no success JSON on failure", out.String())
+			}
+		})
 	}
 }
 

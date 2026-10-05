@@ -14,6 +14,7 @@ getRelease is a Go CLI for downloading GitHub release assets, extracting archive
 - Install one binary or multiple binaries from the selected asset.
 - Rename a single installed binary with `--install-as`.
 - Skip installation and keep the downloaded payload with `--download-only`.
+- Delete downloaded assets once they are installed, or keep them with `keepDownloads`.
 - Track install history for upgrades, version pinning, shell completion, and cleanup workflows.
 - Upgrade one installed package or every installed package still present on disk.
 - Manage config and history from built-in `config` and `history` subcommands.
@@ -55,6 +56,14 @@ Download an asset without installing it:
 ```bash
 getRelease sharkdp/fd --download-only
 ```
+
+Each download goes into its own directory under `downloadDir` (`~/install` by default). After binaries are installed and install history is saved, that directory is deleted; with `--download-only`, or when installation or history persistence fails, it is left in place. To keep every download:
+
+```bash
+getRelease config set keepDownloads true
+```
+
+Set `keepDownloads` if your `installCommand` symlinks to the downloaded file instead of copying it, since deleting the download would break the link.
 
 Install a single binary under a different name:
 
