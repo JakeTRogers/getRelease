@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -792,6 +795,114 @@ func TestRunRootCancelledSelectionReturnsError(t *testing.T) {
 
 	if err := runRoot(cmd, nil); !errors.Is(err, selector.ErrCancelled) {
 		t.Fatalf("runRoot() error = %v, want selector.ErrCancelled", err)
+	}
+}
+
+func TestNewWorkDir(t *testing.T) {
+	t.Parallel()
+
+	downloadDir := filepath.Join(t.TempDir(), "downloads")
+	first, err := newWorkDir(downloadDir, "tool")
+	if err != nil {
+		t.Fatalf("newWorkDir() error: %v", err)
+	}
+	second, err := newWorkDir(downloadDir, "tool")
+	if err != nil {
+		t.Fatalf("newWorkDir() error: %v", err)
+	}
+	if first == second {
+		t.Fatalf("newWorkDir() returned %q twice, want unique directories", first)
+	}
+	for _, dir := range []string{first, second} {
+		if filepath.Dir(dir) != downloadDir || !regexp.MustCompile(`^tool-\d{8}T\d{6}-\d+$`).MatchString(filepath.Base(dir)) {
+			t.Errorf("newWorkDir() = %q, want %s/tool-<YYYYMMDDTHHMMSS>-<suffix>", dir, downloadDir)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+			t.Errorf("work dir mode = %o, want 755", info.Mode().Perm())
+		}
+	}
+}
+
+// archiveRootTest runs the root command against a release whose only asset is
+// a tar.gz containing an executable "tool" script, with autoExtract set as
+// given, and returns the parsed JSON result.
+func archiveRootTest(t *testing.T, autoExtract, downloadOnly bool) (rootCommandResult, string) {
+	t.Helper()
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{TagName: "v1.0.0", Assets: []github.Asset{{
+				Name:        "tool_linux_amd64.tar.gz",
+				DownloadURL: "https://example.invalid/tool_linux_amd64.tar.gz",
+			}}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeTarGz(t, destPath, map[string][]byte{"tool": []byte("#!/bin/sh\nexit 0\n")}), nil
+		},
+	})
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	cfgViper.Set("autoExtract", autoExtract)
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "format": "json", "download-only": strconv.FormatBool(downloadOnly)} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+	var result rootCommandResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, out.String())
+	}
+	return result, installDir
+}
+
+func TestRunRootInstallsArchiveWithAutoExtractDisabled(t *testing.T) {
+	result, installDir := archiveRootTest(t, false, false)
+
+	if !result.Extracted || result.ExtractDir != filepath.Join(filepath.Dir(result.DownloadPath), "extracted") {
+		t.Fatalf("result = extracted %v into %q, want extraction into the work dir's extracted/", result.Extracted, result.ExtractDir)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "tool")); err != nil {
+		t.Fatalf("installed binary missing: %v", err)
+	}
+	records := loadHistoryRecords(t)
+	if len(records) != 1 || records[0].Binaries[0].Name != "tool" {
+		t.Fatalf("history = %+v, want binary recorded relative to the extracted root", records)
+	}
+}
+
+func TestRunRootDownloadOnlyExtraction(t *testing.T) {
+	result, _ := archiveRootTest(t, true, true)
+	wantDir := filepath.Join(filepath.Dir(result.DownloadPath), "extracted")
+	if !result.Extracted || result.ExtractDir != wantDir {
+		t.Fatalf("autoExtract on: extracted %v into %q, want %q", result.Extracted, result.ExtractDir, wantDir)
+	}
+	if _, err := os.Stat(filepath.Join(wantDir, "tool")); err != nil {
+		t.Fatalf("extracted file missing: %v", err)
+	}
+
+	result, _ = archiveRootTest(t, false, true)
+	if result.Extracted || result.ExtractDir != "" {
+		t.Fatalf("autoExtract off: extracted %v into %q, want no extraction", result.Extracted, result.ExtractDir)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(result.DownloadPath), "extracted")); !os.IsNotExist(err) {
+		t.Fatalf("extracted dir exists with autoExtract off (stat err: %v)", err)
 	}
 }
 

@@ -37,7 +37,7 @@ var configKeys = []struct {
 	{value: "downloadDir", description: "directory for downloaded release assets"},
 	{value: "installDir", description: "directory for installed binaries"},
 	{value: "installCommand", description: "command template for installing binaries"},
-	{value: "autoExtract", description: "automatically extract downloaded archives"},
+	{value: "autoExtract", description: "extract archives fetched with --download-only (installs and upgrades always extract)"},
 	{value: "token", description: "GitHub API token (prefer GETRELEASE_TOKEN/GH_TOKEN/GITHUB_TOKEN env vars over storing here)"},
 	{value: "cooldown", description: "minimum release age in days before install (0 disables)"},
 	{value: "trustedOwners", description: "GitHub owners exempt from cooldown (case-insensitive)"},

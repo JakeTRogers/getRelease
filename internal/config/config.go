@@ -33,7 +33,8 @@ type AppConfig struct {
 	// InstallCommand is the command template for installing binaries.
 	// {source} and {target} are substituted with actual paths.
 	InstallCommand string `mapstructure:"installCommand" yaml:"installCommand"`
-	// AutoExtract controls whether archives are automatically extracted after download.
+	// AutoExtract controls whether --download-only extracts archives.
+	// Installs and upgrades always extract archives to find their binaries.
 	AutoExtract bool `mapstructure:"autoExtract" yaml:"autoExtract"`
 	// Token authenticates GitHub API requests. Prefer the GETRELEASE_TOKEN,
 	// GH_TOKEN, or GITHUB_TOKEN environment variables over storing it here.

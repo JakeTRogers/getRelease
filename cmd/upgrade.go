@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -321,10 +320,9 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	}
 
 	// Prepare download workspace
-	ts := time.Now().Format("20060102T150405")
-	workDir := filepath.Join(cfg.DownloadDir, fmt.Sprintf("%s-%s", repo, ts))
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return false, fmt.Errorf("create download dir %s: %w", workDir, err)
+	workDir, err := newWorkDir(cfg.DownloadDir, repo)
+	if err != nil {
+		return false, err
 	}
 
 	destPath := filepath.Join(workDir, chosen.Name)
@@ -339,7 +337,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	var extractedDir string
 	if archive.IsArchive(chosen.Name) {
-		extractedDir = filepath.Join(workDir, "extracted")
+		extractedDir = filepath.Join(workDir, extractedDirName)
 		if err := archive.Extract(destPath, extractedDir); err != nil {
 			return false, fmt.Errorf("extracting archive: %w", err)
 		}

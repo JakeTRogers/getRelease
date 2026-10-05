@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -230,4 +232,34 @@ func setCommandFlag(t *testing.T, cmd *cobra.Command, name, value string) {
 		}
 		flag.Changed = false
 	})
+}
+
+// writeTarGz writes a .tar.gz archive at destPath containing files, each with
+// mode 0755, and returns its size.
+func writeTarGz(t *testing.T, destPath string, files map[string][]byte) int64 {
+	t.Helper()
+	f, err := os.Create(destPath)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for name, content := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))}); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatalf("write tar entry: %v", err)
+		}
+	}
+	for _, closer := range []interface{ Close() error }{tw, gz, f} {
+		if err := closer.Close(); err != nil {
+			t.Fatalf("close archive: %v", err)
+		}
+	}
+	info, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
 }

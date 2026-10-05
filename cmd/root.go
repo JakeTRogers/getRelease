@@ -37,6 +37,7 @@ type rootCommandResult struct {
 	DownloadPath string          `json:"downloadPath"`
 	DownloadSize int64           `json:"downloadSize"`
 	Extracted    bool            `json:"extracted"`
+	ExtractDir   string          `json:"extractDir,omitempty"`
 	DownloadOnly bool            `json:"downloadOnly"`
 	Binaries     []string        `json:"binaries,omitempty"`
 	Installed    []string        `json:"installed,omitempty"`
@@ -119,7 +120,7 @@ func init() {
 	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
 	rootCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	rootCmd.Flags().StringP("tag", "t", "", "release tag/version (default: latest)")
-	rootCmd.Flags().BoolP("download-only", "d", false, "download and extract without installing")
+	rootCmd.Flags().BoolP("download-only", "d", false, "download without installing; archives are extracted unless autoExtract is false")
 	rootCmd.Flags().String("install-as", "", "override installed filename when exactly one binary is installed")
 	rootCmd.Flags().String("format", "text", "output format: text, json")
 	rootCmd.Flags().Int("cooldown", 0, "minimum release age in days (overrides config; 0 disables)")
@@ -408,9 +409,9 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	result.Asset = selectedAsset
 
 	// Prepare work directory
-	workDir := filepath.Join(cfg.DownloadDir, fmt.Sprintf("%s-%d", repo, time.Now().Unix()))
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("creating work dir: %w", err)
+	workDir, err := newWorkDir(cfg.DownloadDir, repo)
+	if err != nil {
+		return err
 	}
 
 	// Download asset
@@ -432,56 +433,59 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Extract if appropriate
-	extracted := false
-	if cfg.AutoExtract && archive.IsArchive(selectedAsset.Name) {
+	// Extract archives. Installing requires it; autoExtract only decides
+	// whether --download-only extracts.
+	downloadOnly, _ := cmd.Flags().GetBool("download-only")
+	if archive.IsArchive(selectedAsset.Name) && (cfg.AutoExtract || !downloadOnly) {
 		if textOutput {
 			if _, err := fmt.Fprintf(out, "Extracting %s...\n", selectedAsset.Name); err != nil {
 				return fmt.Errorf("writing extraction message: %w", err)
 			}
 		}
-		if err := archive.Extract(assetPath, workDir); err != nil {
+		extractDir := filepath.Join(workDir, extractedDirName)
+		if err := archive.Extract(assetPath, extractDir); err != nil {
 			return fmt.Errorf("extracting asset: %w", err)
 		}
-		extracted = true
+		result.Extracted = true
+		result.ExtractDir = extractDir
 	}
-	result.Extracted = extracted
 
 	// If download-only, report path and exit
-	downloadOnly, _ := cmd.Flags().GetBool("download-only")
 	if downloadOnly {
 		result.DownloadOnly = true
 		if textOutput {
 			if _, err := fmt.Fprintf(out, "Downloaded to %s\n", assetPath); err != nil {
 				return fmt.Errorf("writing download-only result: %w", err)
 			}
+			if result.Extracted {
+				if _, err := fmt.Fprintf(out, "Extracted to %s\n", result.ExtractDir); err != nil {
+					return fmt.Errorf("writing extraction result: %w", err)
+				}
+			}
 			return nil
 		}
 		return outputRootResult(out, result)
 	}
 
-	// Find binaries
+	// Find binaries, as paths relative to payloadDir
+	payloadDir := workDir
 	var bins []string
-	if extracted {
-		bins, err = archive.FindBinaries(workDir)
+	if result.Extracted {
+		payloadDir = result.ExtractDir
+		bins, err = archive.FindBinaries(payloadDir)
 		if err != nil {
 			return fmt.Errorf("finding binaries: %w", err)
 		}
 	} else {
-		if archive.IsArchive(selectedAsset.Name) {
-			// archive was not extracted - no binaries available
-			bins = nil
-		} else {
-			// downloaded file itself is the binary
-			if err := checkRawAssetExecutable(assetPath, selectedAsset.Name); err != nil {
-				return err
-			}
-			bins = []string{selectedAsset.Name}
+		// downloaded file itself is the binary
+		if err := checkRawAssetExecutable(assetPath, selectedAsset.Name); err != nil {
+			return err
 		}
+		bins = []string{selectedAsset.Name}
 	}
 
 	if len(bins) == 0 {
-		return fmt.Errorf("no installable binaries found in %s", workDir)
+		return fmt.Errorf("no installable binaries found in %s", payloadDir)
 	}
 
 	// Select binaries to install
@@ -519,7 +523,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	for _, bin := range toInstall {
-		src := filepath.Join(workDir, bin)
+		src := filepath.Join(payloadDir, bin)
 		absSrc, err := filepath.Abs(src)
 		if err != nil {
 			return fmt.Errorf("resolving source path: %w", err)
@@ -659,6 +663,29 @@ func resolveInstallNamesForSelection(repo, assetName, osName, arch, tag string, 
 	}
 
 	return map[string]string{binaries[0]: name}, nil
+}
+
+// extractedDirName is the directory inside a work directory that archives
+// are extracted into.
+const extractedDirName = "extracted"
+
+// newWorkDir creates a directory under downloadDir for one download, named
+// after the repository and the current time plus a random suffix, so runs in
+// the same second or repositories sharing a name never share a directory.
+func newWorkDir(downloadDir, repo string) (string, error) {
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating download dir %s: %w", downloadDir, err)
+	}
+	dir, err := os.MkdirTemp(downloadDir, fmt.Sprintf("%s-%s-*", repo, time.Now().Format("20060102T150405")))
+	if err != nil {
+		return "", fmt.Errorf("creating work dir: %w", err)
+	}
+	// MkdirTemp creates the directory 0700; keep the 0755 previously used,
+	// so an installCommand running as another user can read the payload.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return "", fmt.Errorf("setting work dir permissions: %w", err)
+	}
+	return dir, nil
 }
 
 // checkRawAssetExecutable refuses to install a downloaded non-archive asset
