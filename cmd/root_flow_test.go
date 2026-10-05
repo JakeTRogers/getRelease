@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -649,9 +650,14 @@ func TestRunRootMixedCaseReinstallUpdatesExistingRecord(t *testing.T) {
 		t.Fatalf("set repo: %v", err)
 	}
 	cmd.SetOut(&bytes.Buffer{})
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
 
 	if err := runRoot(cmd, nil); err != nil {
 		t.Fatalf("runRoot() error: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no untracked-binary note when reinstalling the same binary", errOut.String())
 	}
 
 	records := loadHistoryRecords(t)
@@ -660,6 +666,92 @@ func TestRunRootMixedCaseReinstallUpdatesExistingRecord(t *testing.T) {
 	}
 	if records[0].ID != "rec1" || records[0].Owner != "cli" || records[0].Repo != "tool" || records[0].Tag != "v2.0.0" {
 		t.Fatalf("history record = %+v, want rec1 cli/tool at v2.0.0", records[0])
+	}
+}
+
+func TestUntrackedBinaries(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "tool")
+	orphaned := filepath.Join(dir, "tool-old")
+	writeExecutableFile(t, kept)
+	writeExecutableFile(t, orphaned)
+
+	previous := []history.Binary{
+		{Name: "tool", InstalledAs: "tool", InstallPath: kept},
+		{Name: "tool", InstalledAs: "tool-old", InstallPath: orphaned},
+		{Name: "helper", InstalledAs: "helper", InstallPath: filepath.Join(dir, "helper")}, // already removed
+		{Name: "legacy"},
+	}
+
+	got := untrackedBinaries(previous, []string{kept})
+	if want := []string{orphaned}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("untrackedBinaries() = %v, want %v", got, want)
+	}
+}
+
+func TestRunRootReportsBinariesNoLongerTracked(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v2.0.0",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://example.invalid/tool_linux_amd64",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	installDir := filepath.Join(baseDir, "bin")
+	oldPath := filepath.Join(installDir, "tool")
+	writeExecutableFile(t, oldPath)
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+	writeHistoryRecords(t, []history.Record{
+		newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64", "tool", oldPath),
+	})
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	for flag, value := range map[string]string{"owner": "cli", "repo": "tool", "install-as": "tool2", "format": "json"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+
+	if err := runRoot(cmd, nil); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	var result rootCommandResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, out.String())
+	}
+	if want := []string{oldPath}; !reflect.DeepEqual(result.Untracked, want) {
+		t.Fatalf("result.Untracked = %v, want %v", result.Untracked, want)
+	}
+	wantNote := "Note: " + oldPath + " from the previous cli/tool install (v1.0.0) is no longer tracked; it was left in place"
+	if !strings.Contains(errOut.String(), wantNote) {
+		t.Fatalf("stderr = %q, want %q", errOut.String(), wantNote)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("previous binary should be left in place: %v", err)
+	}
+
+	records := loadHistoryRecords(t)
+	if len(records) != 1 || len(records[0].Binaries) != 1 || records[0].Binaries[0].InstalledAs != "tool2" {
+		t.Fatalf("history = %+v, want one record tracking tool2", records)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -39,6 +40,7 @@ type rootCommandResult struct {
 	Binaries     []string        `json:"binaries,omitempty"`
 	Installed    []string        `json:"installed,omitempty"`
 	HistoryPath  string          `json:"historyPath,omitempty"`
+	Untracked    []string        `json:"untracked,omitempty"`
 	Cooldown     *cooldownReport `json:"cooldown,omitempty"`
 }
 
@@ -548,6 +550,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("saving history: %w", err)
 	}
 	result.HistoryPath = histPath
+	if existing != nil {
+		result.Untracked = untrackedBinaries(existing.Binaries, installedPaths)
+	}
 
 	if textOutput {
 		if _, err := fmt.Fprintf(out, "\nHistory updated: %s/%s %s -> %s\n", owner, repo, rel.TagName, strings.Join(installedPaths, ", ")); err != nil {
@@ -556,9 +561,37 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		if _, err := fmt.Fprintf(out, "Review the release notes: %s\n", githubReleasePageURL(host, owner, repo, rel)); err != nil {
 			return fmt.Errorf("writing release notes message: %w", err)
 		}
-		return nil
+	} else if err := outputRootResult(out, result); err != nil {
+		return err
 	}
-	return outputRootResult(out, result)
+	return writeUntrackedNotes(cmd.ErrOrStderr(), result.Untracked, owner, repo, existing)
+}
+
+// writeUntrackedNotes tells the user about binaries from the previous install
+// that are no longer tracked. History holds one record per repository, so a
+// reinstall that installs different binaries stops tracking the old ones.
+func writeUntrackedNotes(w io.Writer, untracked []string, owner, repo string, previous *history.Record) error {
+	for _, path := range untracked {
+		if _, err := fmt.Fprintf(w, "Note: %s from the previous %s/%s install (%s) is no longer tracked; it was left in place\n", path, owner, repo, previous.Tag); err != nil {
+			return fmt.Errorf("writing untracked binary note: %w", err)
+		}
+	}
+	return nil
+}
+
+// untrackedBinaries returns the install paths of previous binaries that are
+// still on disk but not among the newly installed paths.
+func untrackedBinaries(previous []history.Binary, installedPaths []string) []string {
+	var untracked []string
+	for _, bin := range previous {
+		if bin.InstallPath == "" || slices.Contains(installedPaths, bin.InstallPath) {
+			continue
+		}
+		if _, err := os.Stat(bin.InstallPath); err == nil {
+			untracked = append(untracked, bin.InstallPath)
+		}
+	}
+	return untracked
 }
 
 func normalizeOutputFormat(format string) (string, error) {
