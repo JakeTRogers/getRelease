@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestInitConfigSetsLogLevel(t *testing.T) {
@@ -752,6 +754,44 @@ func TestRunRootReportsBinariesNoLongerTracked(t *testing.T) {
 	records := loadHistoryRecords(t)
 	if len(records) != 1 || len(records[0].Binaries) != 1 || records[0].Binaries[0].InstalledAs != "tool2" {
 		t.Fatalf("history = %+v, want one record tracking tool2", records)
+	}
+}
+
+func TestRunRootCancelledSelectionReturnsError(t *testing.T) {
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v1.0.0",
+				Assets: []github.Asset{
+					{Name: "tool_linux_amd64.tar.gz"},
+					{Name: "tool-extended_linux_amd64.tar.gz"},
+				},
+			}, nil
+		},
+		downloadAsset: func(github.Asset, string) (int64, error) {
+			t.Fatal("DownloadAsset() should not be called after a cancelled selection")
+			return 0, nil
+		},
+	})
+	selectItems = func([]string, string) (int, error) {
+		return -1, selector.ErrCancelled
+	}
+
+	baseDir := t.TempDir()
+	setTestConfig(filepath.Join(baseDir, "downloads"), filepath.Join(baseDir, "bin"))
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("owner", "cli"); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "tool"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, nil); !errors.Is(err, selector.ErrCancelled) {
+		t.Fatalf("runRoot() error = %v, want selector.ErrCancelled", err)
 	}
 }
 

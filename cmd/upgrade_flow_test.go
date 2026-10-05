@@ -14,6 +14,7 @@ import (
 	"github.com/JakeTRogers/getRelease/internal/config"
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 )
 
 func TestResolveUpgradeRecordMultipleMatchesUsesSelection(t *testing.T) {
@@ -233,6 +234,45 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "Failed upgrading cli/failing: fetching latest release for cli/failing: boom") {
 		t.Fatalf("runUpgradeAll() stderr = %q, want failure line", errOut.String())
+	}
+}
+
+func TestRunUpgradeAllStopsWhenCancelled(t *testing.T) {
+	var checked []string
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			checked = append(checked, repo)
+			// Two equally preferred assets and no exact name match force a prompt.
+			return &github.Release{TagName: "v2.0.0", Assets: []github.Asset{
+				{Name: repo + "_linux_amd64.tar.gz"},
+				{Name: repo + "-extended_linux_amd64.tar.gz"},
+			}}, nil
+		},
+	})
+	selectItems = func([]string, string) (int, error) {
+		return -1, selector.ErrCancelled
+	}
+
+	cfg := &config.AppConfig{AssetPreferences: config.AssetPreferences{Formats: []string{"tar.gz", "zip"}}}
+	store := history.NewStore(filepath.Join(t.TempDir(), "history.json"))
+	for _, repo := range []string{"first", "second"} {
+		path := filepath.Join(t.TempDir(), "bin", repo)
+		writeExecutableFile(t, path)
+		if err := store.Add(newHistoryRecord("rec-"+repo, "cli", repo, "v1.0.0", "legacy-name", repo, path)); err != nil {
+			t.Fatalf("add record: %v", err)
+		}
+	}
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := runUpgradeAll(cmd, store, cfg, true, disabledCooldown())
+	if !errors.Is(err, selector.ErrCancelled) {
+		t.Fatalf("runUpgradeAll() error = %v, want selector.ErrCancelled", err)
+	}
+	if !reflect.DeepEqual(checked, []string{"first"}) {
+		t.Fatalf("checked repos = %v, want only [first] before stopping", checked)
 	}
 }
 

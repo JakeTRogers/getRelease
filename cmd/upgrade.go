@@ -17,6 +17,7 @@ import (
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/history"
 	"github.com/JakeTRogers/getRelease/internal/platform"
+	"github.com/JakeTRogers/getRelease/internal/selector"
 	"github.com/JakeTRogers/getRelease/internal/semver"
 )
 
@@ -122,6 +123,11 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		}
 
 		upgraded, err := upgradeRecord(cmd, store, cfg, &rec, dryRun, cds)
+		if errors.Is(err, selector.ErrCancelled) {
+			// The user cancelled a prompt: stop rather than move on to the
+			// remaining packages.
+			return err
+		}
 		if err != nil {
 			failed++
 			failures = append(failures, fmt.Sprintf("%s/%s: %v", rec.Owner, rec.Repo, err))

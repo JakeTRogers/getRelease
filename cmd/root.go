@@ -71,21 +71,30 @@ current OS and architecture are presented for selection.`,
 	RunE: runRoot,
 }
 
+// exitCancelled is the exit status when the user cancels an interactive prompt.
+const exitCancelled = 2
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		var rateLimitErr *github.RateLimitError
-		if errors.As(err, &rateLimitErr) {
-			if _, writeErr := fmt.Fprintf(os.Stderr, "Error: %s\n", rateLimitErr); writeErr != nil {
-				os.Exit(1)
-			}
-			os.Exit(1)
-		}
-		if _, writeErr := fmt.Fprintf(os.Stderr, "Error: %s\n", err); writeErr != nil {
-			os.Exit(1)
-		}
-		os.Exit(1)
+		os.Exit(reportError(os.Stderr, err))
 	}
+}
+
+// reportError prints err for the user and returns the process exit status:
+// exitCancelled, printing nothing, when the user cancelled a prompt, and 1
+// otherwise. A rate limit error is printed without its wrapping context.
+func reportError(w io.Writer, err error) int {
+	if errors.Is(err, selector.ErrCancelled) {
+		return exitCancelled
+	}
+	var rateLimitErr *github.RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		err = rateLimitErr
+	}
+	// The process exits next either way, so a failed write is not reported.
+	_, _ = fmt.Fprintf(w, "Error: %s\n", err)
+	return 1
 }
 
 func init() {
@@ -359,9 +368,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		}
 		idx, err := selectItems(items, "Select an asset to download")
 		if err != nil {
-			if errors.Is(err, selector.ErrCancelled) {
-				os.Exit(2)
-			}
 			return fmt.Errorf("selecting asset: %w", err)
 		}
 		selectedAsset = matches[idx]
@@ -460,9 +466,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	} else {
 		ok, err := confirmAction(fmt.Sprintf("Install all %d binaries?", len(bins)), true)
 		if err != nil {
-			if errors.Is(err, selector.ErrCancelled) {
-				os.Exit(2)
-			}
 			return fmt.Errorf("confirmation prompt: %w", err)
 		}
 		if ok {
@@ -470,9 +473,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		} else {
 			idx, err := selectItems(bins, "Select a binary to install")
 			if err != nil {
-				if errors.Is(err, selector.ErrCancelled) {
-					os.Exit(2)
-				}
 				return fmt.Errorf("selecting binary: %w", err)
 			}
 			toInstall = []string{bins[idx]}

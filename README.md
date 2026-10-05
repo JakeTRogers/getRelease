@@ -252,6 +252,7 @@ getRelease completion powershell
 - Asset selection is automatic when there is exactly one match or one clearly preferred match for the current platform.
 - When an archive contains multiple binaries, the CLI can install all of them or prompt you to choose one.
 - Install history is what powers `upgrade`, `pin`, `unpin`, owner and repo completion, and installed-target suggestions.
+- The exit status is 0 on success, 1 on error, and 2 when an interactive prompt is cancelled (for example with Ctrl-C).
 
 ## Development
 
