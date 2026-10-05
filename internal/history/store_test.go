@@ -266,6 +266,31 @@ func TestStore_FindByRepo(t *testing.T) {
 	}
 }
 
+func TestStore_RepoMatchingIgnoresCase(t *testing.T) {
+	t.Parallel()
+	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+	if err := s.Add(Record{Owner: "JuneGunn", Repo: "FZF", Tag: "v1.0.0"}); err != nil {
+		t.Fatalf("Add initial record: %v", err)
+	}
+
+	if got := s.FindByRepo("junegunn", "fzf"); got == nil {
+		t.Fatal("FindByRepo(junegunn, fzf) = nil, want the JuneGunn/FZF record")
+	}
+
+	// Re-adding under GitHub's canonical spelling updates the record in
+	// place instead of creating a duplicate.
+	if err := s.Add(Record{Owner: "junegunn", Repo: "fzf", Tag: "v1.1.0"}); err != nil {
+		t.Fatalf("Add canonical record: %v", err)
+	}
+	records := s.Records()
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].Owner != "junegunn" || records[0].Repo != "fzf" || records[0].Tag != "v1.1.0" {
+		t.Fatalf("record = %+v, want junegunn/fzf at v1.1.0", records[0])
+	}
+}
+
 func TestStore_Prune(t *testing.T) {
 	t.Parallel()
 	s := NewStore(filepath.Join(t.TempDir(), "history.json"))

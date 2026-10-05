@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -39,6 +40,7 @@ type rootCommandResult struct {
 	Binaries     []string        `json:"binaries,omitempty"`
 	Installed    []string        `json:"installed,omitempty"`
 	HistoryPath  string          `json:"historyPath,omitempty"`
+	Untracked    []string        `json:"untracked,omitempty"`
 	Cooldown     *cooldownReport `json:"cooldown,omitempty"`
 }
 
@@ -207,6 +209,18 @@ func historyHostFor(owner, repo string) string {
 	return host
 }
 
+// canonicalRepoName returns GitHub's spelling of owner/repo, taken from the
+// release's web URL, so history records the same name however the user
+// capitalized it. The requested names are kept when the URL is missing or
+// names a different repository, as after a rename redirect.
+func canonicalRepoName(owner, repo string, rel *github.Release) (string, string) {
+	urlOwner, urlRepo, _, err := github.ParseRepoURL(rel.HTMLURL)
+	if err != nil || !strings.EqualFold(urlOwner, owner) || !strings.EqualFold(urlRepo, repo) {
+		return owner, repo
+	}
+	return urlOwner, urlRepo
+}
+
 // runRoot implements the full download/extract/select/install pipeline.
 func runRoot(cmd *cobra.Command, _ []string) error {
 	owner, repo, host, err := resolveRepo(cmd)
@@ -278,11 +292,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			if err != nil {
 				return err
 			}
-			if textOutput {
-				if _, err := fmt.Fprintf(out, "release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", rel.TagName, policy.ageDays(rel.PublishedAt), policy.days, fallback.TagName); err != nil {
-					return fmt.Errorf("writing cooldown fallback message: %w", err)
-				}
-			}
 			result.Cooldown = &cooldownReport{
 				Days:           policy.days,
 				SkippedTag:     rel.TagName,
@@ -291,6 +300,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			rel = fallback
 		}
 	}
+	owner, repo = canonicalRepoName(owner, repo, rel)
+	result.Owner = owner
+	result.Repo = repo
 	result.ReleaseTag = rel.TagName
 	result.ReleaseName = rel.DisplayName()
 
@@ -299,7 +311,15 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		which = tag
 	}
 	if textOutput {
-		if _, err := fmt.Fprintf(out, "Fetching %s release for %s/%s...\n  Release: %s (%s)\n\n", which, owner, repo, rel.DisplayName(), rel.TagName); err != nil {
+		if _, err := fmt.Fprintf(out, "Fetching %s release for %s/%s...\n", which, owner, repo); err != nil {
+			return fmt.Errorf("writing release heading: %w", err)
+		}
+		if cd := result.Cooldown; cd != nil {
+			if _, err := fmt.Fprintf(out, "  release %s is %d day(s) old, cooldown is %d days — falling back to %s\n", cd.SkippedTag, cd.SkippedAgeDays, cd.Days, rel.TagName); err != nil {
+				return fmt.Errorf("writing cooldown fallback message: %w", err)
+			}
+		}
+		if _, err := fmt.Fprintf(out, "  Release: %s (%s)\n\n", rel.DisplayName(), rel.TagName); err != nil {
 			return fmt.Errorf("writing release heading: %w", err)
 		}
 	}
@@ -417,6 +437,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			bins = nil
 		} else {
 			// downloaded file itself is the binary
+			if err := checkRawAssetExecutable(assetPath, selectedAsset.Name); err != nil {
+				return err
+			}
 			bins = []string{selectedAsset.Name}
 		}
 	}
@@ -461,7 +484,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	var installedNames []string
 	installer := newBinaryInstaller(cfg.InstallCommand)
 	installAs, _ := cmd.Flags().GetString("install-as")
-	installNames, err := resolveInstallNamesForSelection(repo, selectedAsset.Name, osName, arch, toInstall, installAs)
+	installNames, err := resolveInstallNamesForSelection(repo, selectedAsset.Name, osName, arch, rel.TagName, toInstall, installAs)
 	if err != nil {
 		return err
 	}
@@ -530,6 +553,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("saving history: %w", err)
 	}
 	result.HistoryPath = histPath
+	if existing != nil {
+		result.Untracked = untrackedBinaries(existing.Binaries, installedPaths)
+	}
 
 	if textOutput {
 		if _, err := fmt.Fprintf(out, "\nHistory updated: %s/%s %s -> %s\n", owner, repo, rel.TagName, strings.Join(installedPaths, ", ")); err != nil {
@@ -538,9 +564,37 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		if _, err := fmt.Fprintf(out, "Review the release notes: %s\n", githubReleasePageURL(host, owner, repo, rel)); err != nil {
 			return fmt.Errorf("writing release notes message: %w", err)
 		}
-		return nil
+	} else if err := outputRootResult(out, result); err != nil {
+		return err
 	}
-	return outputRootResult(out, result)
+	return writeUntrackedNotes(cmd.ErrOrStderr(), result.Untracked, owner, repo, existing)
+}
+
+// writeUntrackedNotes tells the user about binaries from the previous install
+// that are no longer tracked. History holds one record per repository, so a
+// reinstall that installs different binaries stops tracking the old ones.
+func writeUntrackedNotes(w io.Writer, untracked []string, owner, repo string, previous *history.Record) error {
+	for _, path := range untracked {
+		if _, err := fmt.Fprintf(w, "Note: %s from the previous %s/%s install (%s) is no longer tracked; it was left in place\n", path, owner, repo, previous.Tag); err != nil {
+			return fmt.Errorf("writing untracked binary note: %w", err)
+		}
+	}
+	return nil
+}
+
+// untrackedBinaries returns the install paths of previous binaries that are
+// still on disk but not among the newly installed paths.
+func untrackedBinaries(previous []history.Binary, installedPaths []string) []string {
+	var untracked []string
+	for _, bin := range previous {
+		if bin.InstallPath == "" || slices.Contains(installedPaths, bin.InstallPath) {
+			continue
+		}
+		if _, err := os.Stat(bin.InstallPath); err == nil {
+			untracked = append(untracked, bin.InstallPath)
+		}
+	}
+	return untracked
 }
 
 func normalizeOutputFormat(format string) (string, error) {
@@ -560,9 +614,9 @@ func outputRootResult(w io.Writer, result rootCommandResult) error {
 	return enc.Encode(result)
 }
 
-func resolveInstallNamesForSelection(repo, assetName, osName, arch string, binaries []string, installAs string) (map[string]string, error) {
+func resolveInstallNamesForSelection(repo, assetName, osName, arch, tag string, binaries []string, installAs string) (map[string]string, error) {
 	if strings.TrimSpace(installAs) == "" {
-		return platform.ResolveInstallNames(repo, assetName, osName, arch, binaries), nil
+		return platform.ResolveInstallNames(repo, assetName, osName, arch, tag, binaries), nil
 	}
 
 	if len(binaries) != 1 {
@@ -575,6 +629,20 @@ func resolveInstallNamesForSelection(repo, assetName, osName, arch string, binar
 	}
 
 	return map[string]string{binaries[0]: name}, nil
+}
+
+// checkRawAssetExecutable refuses to install a downloaded non-archive asset
+// that does not look like an executable, such as a file compressed in a
+// format getRelease cannot unpack.
+func checkRawAssetExecutable(path, assetName string) error {
+	ok, err := archive.LooksExecutable(path)
+	if err != nil {
+		return fmt.Errorf("inspecting %s: %w", assetName, err)
+	}
+	if !ok {
+		return fmt.Errorf("asset %s does not look like an executable (no ELF, Mach-O, PE, or #! header); it may use an unsupported archive or compression format, use --download-only to fetch it anyway", assetName)
+	}
+	return nil
 }
 
 func validateInstallName(name string) (string, error) {

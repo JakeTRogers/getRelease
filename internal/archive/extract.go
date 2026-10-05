@@ -4,6 +4,8 @@ package archive
 import (
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -15,17 +17,38 @@ import (
 	"strings"
 )
 
-// IsArchive returns true when filename has a recognized archive extension.
+// IsArchive returns true when filename has an extension Extract can unpack:
+// a tar or zip archive, or a single compressed file such as "tool.gz".
 func IsArchive(filename string) bool {
 	l := strings.ToLower(filename)
-	return strings.HasSuffix(l, ".tar.gz") || strings.HasSuffix(l, ".tgz") ||
-		strings.HasSuffix(l, ".tar.xz") || strings.HasSuffix(l, ".txz") ||
-		strings.HasSuffix(l, ".tar.bz2") || strings.HasSuffix(l, ".tbz2") ||
-		strings.HasSuffix(l, ".tar") || strings.HasSuffix(l, ".zip")
+	return isTarOrZip(l) || compressedFileExt(l) != ""
+}
+
+func isTarOrZip(lower string) bool {
+	return strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") ||
+		strings.HasSuffix(lower, ".tar.xz") || strings.HasSuffix(lower, ".txz") ||
+		strings.HasSuffix(lower, ".tar.bz2") || strings.HasSuffix(lower, ".tbz2") ||
+		strings.HasSuffix(lower, ".tar") || strings.HasSuffix(lower, ".zip")
+}
+
+// compressedFileExt returns the compression extension of a single compressed
+// file (not a tarball), or "" when lower is not one.
+func compressedFileExt(lower string) string {
+	if isTarOrZip(lower) {
+		return ""
+	}
+	for _, ext := range []string{".gz", ".bz2", ".xz"} {
+		if strings.HasSuffix(lower, ext) {
+			return ext
+		}
+	}
+	return ""
 }
 
 // Extract extracts the given archive into destDir.
-// Supports common tar formats (using system tar) and zip (using archive/zip).
+// Supports common tar formats (using system tar), zip (using archive/zip),
+// and single compressed files, which are decompressed into destDir under
+// their name without the compression extension.
 func Extract(archivePath, destDir string) error {
 	slog.Debug("extract: start", "archive", archivePath, "dest", destDir)
 
@@ -34,6 +57,16 @@ func Extract(archivePath, destDir string) error {
 	// Ensure destination directory exists.
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("create destination %s: %w", destDir, err)
+	}
+
+	if ext := compressedFileExt(lower); ext != "" {
+		base := filepath.Base(archivePath)
+		dest := filepath.Join(destDir, base[:len(base)-len(ext)])
+		slog.Debug("extract: decompressing single file", "archive", archivePath, "dest", dest)
+		if err := decompressFile(archivePath, dest, ext); err != nil {
+			return fmt.Errorf("decompress %s: %w", archivePath, err)
+		}
+		return nil
 	}
 
 	// ZIP handled by stdlib
@@ -66,6 +99,67 @@ func Extract(archivePath, destDir string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tar extraction failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// decompressFile decompresses the single compressed file src into dest,
+// marking it executable since only selected release assets are decompressed.
+func decompressFile(src, dest, ext string) (err error) {
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return fmt.Errorf("create file %s: %w", dest, err)
+	}
+	defer func() {
+		if closeErr := out.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close file %s: %w", dest, closeErr))
+		}
+	}()
+
+	if ext == ".xz" {
+		// The standard library has no xz decoder; use the xz tool, which
+		// .tar.xz extraction already relies on through tar.
+		var stderr bytes.Buffer
+		cmd := exec.Command("xz", "--decompress", "--stdout", src)
+		cmd.Stdout = out
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("xz decompression failed: %s: %w", strings.TrimSpace(stderr.String()), err)
+		}
+		return nil
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer func() {
+		if closeErr := in.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", src, closeErr))
+		}
+	}()
+
+	var r io.Reader
+	switch ext {
+	case ".gz":
+		gz, err := gzip.NewReader(in)
+		if err != nil {
+			return fmt.Errorf("open gzip stream: %w", err)
+		}
+		defer func() {
+			if closeErr := gz.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close gzip stream: %w", closeErr))
+			}
+		}()
+		r = gz
+	case ".bz2":
+		r = bzip2.NewReader(in)
+	default:
+		return fmt.Errorf("unsupported compression: %s", ext)
+	}
+
+	if _, err := io.Copy(out, r); err != nil {
+		return fmt.Errorf("write file %s: %w", dest, err)
 	}
 	return nil
 }
@@ -169,7 +263,11 @@ func extractZipFile(f *zip.File, destAbs string) (err error) {
 }
 
 // FindBinaries walks dir and returns paths (relative to dir) that look like executables.
-// It skips common documentation/config files and detects binaries by magic bytes or exec bit.
+// It skips documentation and config files, shared libraries and object files, and
+// scripts with a shell extension (helpers and completions; commands that are scripts
+// are conventionally extensionless), and detects binaries by magic bytes or exec bit.
+// When any binaries are inside a "bin" directory, only those are returned, since
+// archives laid out as bin/, lib/, share/ keep supporting executables elsewhere.
 func FindBinaries(dir string) ([]string, error) {
 	var bins []string
 
@@ -186,6 +284,19 @@ func FindBinaries(dir string) ([]string, error) {
 		".cfg":  {},
 		".conf": {},
 		".css":  {},
+		// shared libraries and object files
+		".so":    {},
+		".dylib": {},
+		".dll":   {},
+		".a":     {},
+		".o":     {},
+		".lib":   {},
+		// helper scripts and shell completions
+		".sh":   {},
+		".bash": {},
+		".zsh":  {},
+		".fish": {},
+		".ps1":  {},
 	}
 
 	skipPrefixes := []string{"license", "readme", "changelog", "authors", "contributing", "notice"}
@@ -221,32 +332,16 @@ func FindBinaries(dir string) ([]string, error) {
 				return nil
 			}
 		}
+		// Skip versioned shared libraries such as libfoo.so.1.2
+		if strings.Contains(lname, ".so.") {
+			return nil
+		}
 
 		// Read file header for magic bytes
-		var isBin bool
-		buf := make([]byte, 4)
-		n, err := readFileHeader(path, buf)
+		isBin, err := LooksExecutable(path)
 		if err != nil {
 			// Best effort: skip files we can't open
 			return nil
-		}
-		buf = buf[:n]
-
-		if len(buf) >= 4 && bytes.Equal(buf[:4], []byte{0x7f, 'E', 'L', 'F'}) {
-			isBin = true
-		}
-		if !isBin && len(buf) >= 4 {
-			if bytes.Equal(buf[:4], []byte{0xfe, 0xed, 0xfa, 0xce}) ||
-				bytes.Equal(buf[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}) ||
-				bytes.Equal(buf[:4], []byte{0xca, 0xfe, 0xba, 0xbe}) {
-				isBin = true
-			}
-		}
-		if !isBin && len(buf) >= 2 && bytes.Equal(buf[:2], []byte{'M', 'Z'}) {
-			isBin = true
-		}
-		if !isBin && len(buf) >= 2 && buf[0] == '#' && buf[1] == '!' {
-			isBin = true
 		}
 
 		if !isBin {
@@ -273,7 +368,58 @@ func FindBinaries(dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", dir, err)
 	}
+
+	var inBinDir []string
+	for _, bin := range bins {
+		if isInBinDir(bin) {
+			inBinDir = append(inBinDir, bin)
+		}
+	}
+	if len(inBinDir) > 0 {
+		slog.Debug("find binaries: keeping only bin directory entries", "kept", len(inBinDir), "found", len(bins))
+		return inBinDir, nil
+	}
 	return bins, nil
+}
+
+// isInBinDir reports whether the relative path rel has a "bin" directory
+// component.
+func isInBinDir(rel string) bool {
+	for _, part := range strings.Split(filepath.Dir(rel), string(os.PathSeparator)) {
+		if strings.EqualFold(part, "bin") {
+			return true
+		}
+	}
+	return false
+}
+
+// executableMagics are file headers of native executables and scripts:
+// ELF, Mach-O (32/64-bit in both byte orders, and universal), PE, and "#!".
+var executableMagics = [][]byte{
+	{0x7f, 'E', 'L', 'F'},
+	{0xfe, 0xed, 0xfa, 0xce},
+	{0xfe, 0xed, 0xfa, 0xcf},
+	{0xce, 0xfa, 0xed, 0xfe},
+	{0xcf, 0xfa, 0xed, 0xfe},
+	{0xca, 0xfe, 0xba, 0xbe},
+	{'M', 'Z'},
+	{'#', '!'},
+}
+
+// LooksExecutable reports whether the file at path starts with the header of
+// a native executable or a script.
+func LooksExecutable(path string) (bool, error) {
+	buf := make([]byte, 4)
+	n, err := readFileHeader(path, buf)
+	if err != nil {
+		return false, err
+	}
+	for _, magic := range executableMagics {
+		if bytes.HasPrefix(buf[:n], magic) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func readFileHeader(path string, buf []byte) (n int, err error) {

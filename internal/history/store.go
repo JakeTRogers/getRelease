@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -105,8 +106,9 @@ func (s *Store) Save() error {
 }
 
 // Add inserts or updates a record in the store. If a record with the same
-// owner+repo exists it will be updated (host, tag, pin level, asset,
-// binaries, updatedAt). New records will receive an ID if empty and InstalledAt will be
+// owner+repo exists, compared case-insensitively as GitHub does, it will be
+// updated (owner and repo spelling, host, tag, pin level, asset, binaries,
+// updatedAt). New records will receive an ID if empty and InstalledAt will be
 // set if zero.
 func (s *Store) Add(r Record) error {
 	if !isValidPinLevel(r.PinLevel) {
@@ -123,8 +125,10 @@ func (s *Store) Add(r Record) error {
 	r.UpdatedAt = now
 
 	for i := range s.records {
-		if s.records[i].Owner == r.Owner && s.records[i].Repo == r.Repo {
+		if sameRepo(s.records[i], r.Owner, r.Repo) {
 			// update existing
+			s.records[i].Owner = r.Owner
+			s.records[i].Repo = r.Repo
 			s.records[i].Host = r.Host
 			s.records[i].Tag = r.Tag
 			s.records[i].PinLevel = r.PinLevel
@@ -173,15 +177,22 @@ func (s *Store) FindByBinary(name string) []Record {
 	return out
 }
 
-// FindByRepo returns the record matching owner+repo or nil if not found.
+// FindByRepo returns the record matching owner+repo, compared
+// case-insensitively as GitHub does, or nil if not found.
 func (s *Store) FindByRepo(owner, repo string) *Record {
 	for _, rec := range s.records {
-		if rec.Owner == owner && rec.Repo == repo {
+		if sameRepo(rec, owner, repo) {
 			r := rec
 			return &r
 		}
 	}
 	return nil
+}
+
+// sameRepo reports whether rec tracks owner/repo. GitHub owner and
+// repository names are case-insensitive.
+func sameRepo(rec Record, owner, repo string) bool {
+	return strings.EqualFold(rec.Owner, owner) && strings.EqualFold(rec.Repo, repo)
 }
 
 // Prune removes records where all binaries' InstallPaths do not exist on disk.

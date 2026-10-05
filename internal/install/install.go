@@ -2,8 +2,10 @@
 package install
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,8 +81,12 @@ func (ci *CommandInstaller) Install(source, target string) error {
 // This can be used as a fallback when a command-based installer is not desired.
 type CopyInstaller struct{}
 
-// Install copies the source file to target and ensures executable mode.
-func (ci *CopyInstaller) Install(source, target string) error {
+// Install copies the source file to a temporary file beside target and
+// renames it into place with mode 0755. Replacing the directory entry rather
+// than rewriting target works while the old binary is running (an in-place
+// write fails with "text file busy" on Linux), and a failed copy leaves the
+// existing target untouched instead of truncated.
+func (ci *CopyInstaller) Install(source, target string) (err error) {
 	slog.Debug("CopyInstaller.Install starting", "source", source, "target", target)
 
 	src, err := validatePath(source)
@@ -110,22 +116,32 @@ func (ci *CopyInstaller) Install(source, target string) error {
 		}
 	}()
 
-	out, err := os.OpenFile(tgt, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	// The temp file must be in the target's directory so the rename stays on
+	// one filesystem and is atomic.
+	tmp, err := os.CreateTemp(filepath.Dir(tgt), "."+filepath.Base(tgt)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("create target: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
+	tmpPath := tmp.Name()
 	defer func() {
-		if cerr := out.Close(); cerr != nil {
-			slog.Warn("closing target file failed", "target", tgt, "err", cerr)
+		if err != nil {
+			if rerr := os.Remove(tmpPath); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("remove temp file: %w", rerr))
+			}
 		}
 	}()
 
-	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("copy data: %w", err)
+	if _, err := io.Copy(tmp, in); err != nil {
+		return fmt.Errorf("copy data: %w", errors.Join(err, tmp.Close()))
 	}
-
-	if err := os.Chmod(tgt, 0o755); err != nil {
-		return fmt.Errorf("chmod target: %w", err)
+	if err := tmp.Chmod(0o755); err != nil {
+		return fmt.Errorf("chmod temp file: %w", errors.Join(err, tmp.Close()))
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, tgt); err != nil {
+		return fmt.Errorf("replace target: %w", err)
 	}
 
 	slog.Debug("CopyInstaller completed", "target", tgt)

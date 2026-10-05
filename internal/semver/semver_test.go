@@ -1,6 +1,9 @@
 package semver
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	t.Parallel()
@@ -279,6 +282,120 @@ func TestVersionSameMajorAndSameMinor(t *testing.T) {
 			}
 			if got := tt.left.SameMinor(tt.right); got != tt.wantSameMinor {
 				t.Fatalf("Version.SameMinor() = %v, want %v", got, tt.wantSameMinor)
+			}
+		})
+	}
+}
+
+func TestCompareTags(t *testing.T) {
+	t.Parallel()
+
+	// SemVer 2.0.0 §11 precedence example, lowest to highest.
+	ordered := []string{
+		"v1.0.0-alpha",
+		"v1.0.0-alpha.1",
+		"v1.0.0-alpha.beta",
+		"v1.0.0-beta",
+		"v1.0.0-beta.2",
+		"v1.0.0-beta.11",
+		"v1.0.0-rc.1",
+		"v1.0.0",
+		"v1.0.1",
+	}
+	for i := 0; i+1 < len(ordered); i++ {
+		lo, hi := ordered[i], ordered[i+1]
+		if got, ok := CompareTags(lo, hi); !ok || got != -1 {
+			t.Errorf("CompareTags(%q, %q) = (%d, %v), want (-1, true)", lo, hi, got, ok)
+		}
+		if got, ok := CompareTags(hi, lo); !ok || got != 1 {
+			t.Errorf("CompareTags(%q, %q) = (%d, %v), want (1, true)", hi, lo, got, ok)
+		}
+	}
+
+	tests := []struct {
+		a, b   string
+		want   int
+		wantOK bool
+	}{
+		{a: "v0.75.0-rc1", b: "v0.74.4", want: 1, wantOK: true},
+		{a: "1.2.3", b: "v1.2.3", want: 0, wantOK: true},
+		{a: "v1.0.0+build.5", b: "v1.0.0", want: 0, wantOK: true},
+		{a: "v1.0.0-rc.1+build", b: "v1.0.0-rc.1", want: 0, wantOK: true},
+		{a: "nightly", b: "v1.0.0", wantOK: false},
+		{a: "v1.0.0", b: "2026-09-21", wantOK: false},
+		{a: "v1.2", b: "v1.2.0", wantOK: false},
+	}
+	for _, tt := range tests {
+		got, ok := CompareTags(tt.a, tt.b)
+		if ok != tt.wantOK || (ok && got != tt.want) {
+			t.Errorf("CompareTags(%q, %q) = (%d, %v), want (%d, %v)", tt.a, tt.b, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
+func TestCompareTags_LargeNumericPrerelease(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a, b string
+		want int
+	}{
+		{
+			name: "overflowing identifiers with different lengths",
+			a:    "90000000000000000000", b: "100000000000000000000", want: -1,
+		},
+		{
+			name: "overflowing identifiers with equal lengths",
+			a:    "90000000000000000000", b: "90000000000000000001", want: -1,
+		},
+		{
+			name: "uint64 boundary",
+			a:    "18446744073709551615", b: "18446744073709551616", want: -1,
+		},
+		{
+			name: "numeric before alphanumeric",
+			a:    "90000000000000000000", b: "1alpha", want: -1,
+		},
+		{
+			name: "equal large numeric identifier",
+			a:    "90000000000000000000", b: "90000000000000000000",
+		},
+		{
+			name: "equal large identifier compares following identifiers",
+			a:    "90000000000000000000.2", b: "90000000000000000000.11", want: -1,
+		},
+		{
+			name: "shorter list of equal identifiers",
+			a:    "rc.90000000000000000000", b: "rc.90000000000000000000.1", want: -1,
+		},
+		{
+			name: "identifiers longer than machine integers",
+			a:    strings.Repeat("9", 128), b: "1" + strings.Repeat("0", 128), want: -1,
+		},
+		{
+			name: "accepted leading zeros retain numeric equality",
+			a:    "0002", b: "2",
+		},
+		{
+			name: "accepted zero identifiers retain numeric equality",
+			a:    "000", b: "0",
+		},
+		{
+			name: "accepted leading zeros do not change numeric order",
+			a:    strings.Repeat("0", 128) + "1", b: "2", want: -1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			a, b := "v1.0.0-"+tt.a, "v1.0.0-"+tt.b
+			if got, ok := CompareTags(a, b); !ok || got != tt.want {
+				t.Errorf("CompareTags(%q, %q) = (%d, %v), want (%d, true)", a, b, got, ok, tt.want)
+			}
+			if got, ok := CompareTags(b, a); !ok || got != -tt.want {
+				t.Errorf("CompareTags(%q, %q) = (%d, %v), want (%d, true)", b, a, got, ok, -tt.want)
 			}
 		})
 	}

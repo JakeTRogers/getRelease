@@ -190,6 +190,10 @@ func TestUpgradeFallbackIsNewer(t *testing.T) {
 		{name: "same tag", fallback: "v1.3.2", currentTag: "v1.3.2", want: false},
 		{name: "semver newer", fallback: "v1.4.0", currentTag: "v1.3.2", want: true},
 		{name: "semver older", fallback: "v1.3.2", currentTag: "v1.4.0", want: false},
+		{name: "semver older than installed prerelease", fallback: "v1.4.0", currentTag: "v1.5.0-rc.1", want: false},
+		{name: "semver release of installed prerelease", fallback: "v1.4.0", currentTag: "v1.4.0-rc.1", want: true},
+		{name: "larger numeric prerelease fallback", fallback: "v1.0.0-100000000000000000000", currentTag: "v1.0.0-90000000000000000000", want: true},
+		{name: "smaller numeric prerelease fallback", fallback: "v1.0.0-90000000000000000000", currentTag: "v1.0.0-100000000000000000000", want: false},
 		{name: "non-semver current published after fallback", fallback: "build-2026-06-20", currentTag: "build-2026-07-03", want: false},
 		{name: "non-semver fallback published after current", fallback: "build-2026-07-03", currentTag: "build-2026-06-20", want: true},
 		{name: "non-semver current not in recent releases", fallback: "build-2026-06-20", currentTag: "build-2025-01-01", want: true},
@@ -281,8 +285,12 @@ func TestRunRootCooldownFallsBackToOlderRelease(t *testing.T) {
 	if err := runRoot(cmd, nil); err != nil {
 		t.Fatalf("runRoot() error: %v", err)
 	}
-	if !strings.Contains(out.String(), "release v1.4.0 is 2 day(s) old, cooldown is 10 days — falling back to v1.3.2") {
-		t.Fatalf("runRoot() output = %q, want cooldown fallback message", out.String())
+	// The fallback note belongs under the heading, before the chosen release.
+	wantHeading := "Fetching latest release for cli/tool...\n" +
+		"  release v1.4.0 is 2 day(s) old, cooldown is 10 days — falling back to v1.3.2\n" +
+		"  Release: v1.3.2 (v1.3.2)\n"
+	if !strings.HasPrefix(out.String(), wantHeading) {
+		t.Fatalf("runRoot() output = %q, want it to start with %q", out.String(), wantHeading)
 	}
 	if listCalls != 1 {
 		t.Fatalf("ListReleases calls = %d, want 1", listCalls)

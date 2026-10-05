@@ -63,7 +63,7 @@ func TestResolveInstallNamesForSelection(t *testing.T) {
 	t.Run("defaults to heuristic name", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := resolveInstallNamesForSelection("argo-cd", "argocd-linux-amd64", "linux", "amd64", []string{"argocd-linux-amd64"}, "")
+		got, err := resolveInstallNamesForSelection("argo-cd", "argocd-linux-amd64", "linux", "amd64", "v1.0.0", []string{"argocd-linux-amd64"}, "")
 		if err != nil {
 			t.Fatalf("resolveInstallNamesForSelection() error: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestResolveInstallNamesForSelection(t *testing.T) {
 	t.Run("uses forced install name", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := resolveInstallNamesForSelection("argo-cd", "argocd-linux-amd64", "linux", "amd64", []string{"argocd-linux-amd64"}, "argocd")
+		got, err := resolveInstallNamesForSelection("argo-cd", "argocd-linux-amd64", "linux", "amd64", "v1.0.0", []string{"argocd-linux-amd64"}, "argocd")
 		if err != nil {
 			t.Fatalf("resolveInstallNamesForSelection() error: %v", err)
 		}
@@ -87,7 +87,7 @@ func TestResolveInstallNamesForSelection(t *testing.T) {
 	t.Run("rejects override for multiple binaries", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := resolveInstallNamesForSelection("repo", "asset", "linux", "amd64", []string{"tool", "helper"}, "tool")
+		_, err := resolveInstallNamesForSelection("repo", "asset", "linux", "amd64", "v1.0.0", []string{"tool", "helper"}, "tool")
 		if err == nil {
 			t.Fatal("resolveInstallNamesForSelection() error = nil, want error")
 		}
@@ -96,7 +96,7 @@ func TestResolveInstallNamesForSelection(t *testing.T) {
 	t.Run("rejects path override", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := resolveInstallNamesForSelection("repo", "asset", "linux", "amd64", []string{"tool"}, "nested/tool")
+		_, err := resolveInstallNamesForSelection("repo", "asset", "linux", "amd64", "v1.0.0", []string{"tool"}, "nested/tool")
 		if err == nil {
 			t.Fatal("resolveInstallNamesForSelection() error = nil, want error")
 		}

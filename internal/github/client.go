@@ -1,6 +1,9 @@
 package github
 
 import (
+	"bytes"
+	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,11 +17,21 @@ import (
 )
 
 const (
-	defaultBaseURL   = "https://api.github.com"
-	defaultTimeout   = 30 * time.Second
-	acceptHeader     = "application/vnd.github+json"
-	apiVersionHeader = "2022-11-28"
+	defaultBaseURL           = "https://api.github.com"
+	defaultTimeout           = 30 * time.Second
+	acceptHeader             = "application/vnd.github+json"
+	apiVersionHeader         = "2022-11-28"
+	maxDownloadErrorBodySize = 64 << 10
+
+	// defaultDownloadStallTimeout aborts an asset download that receives no
+	// data for this long. Downloads have no overall deadline, since a large
+	// asset on a slow link can legitimately take many minutes.
+	defaultDownloadStallTimeout = 60 * time.Second
 )
+
+// errDownloadStalled is the cancellation cause of a download that stopped
+// receiving data.
+var errDownloadStalled = errors.New("download stalled")
 
 // Client wraps an HTTP client for GitHub API interactions.
 type Client struct {
@@ -26,6 +39,8 @@ type Client struct {
 	baseURL    string
 	webHost    string
 	token      string
+	// downloadStallTimeout overrides defaultDownloadStallTimeout when set.
+	downloadStallTimeout time.Duration
 }
 
 // NewClient creates a new GitHub API client targeting github.com.
@@ -94,10 +109,43 @@ func NewClientWithHTTP(httpClient *http.Client, baseURL string) *Client {
 // RateLimitError is returned when the GitHub API rate limit is exceeded.
 type RateLimitError struct {
 	ResetAt time.Time
+	// Secondary marks a secondary (abuse) rate limit, which applies to bursts
+	// of requests rather than the hourly quota.
+	Secondary bool
+	// Anonymous marks a limit hit by unauthenticated requests, whose hourly
+	// quota is 60 rather than 5,000.
+	Anonymous bool
 }
 
 func (e *RateLimitError) Error() string {
-	return fmt.Sprintf("GitHub API rate limit exceeded; resets at %s", e.ResetAt.Local().Format(time.RFC1123))
+	at := e.ResetAt.Local().Format(time.RFC1123)
+	if e.Secondary {
+		return fmt.Sprintf("GitHub API secondary rate limit exceeded; retry after %s", at)
+	}
+	msg := fmt.Sprintf("GitHub API rate limit exceeded; resets at %s", at)
+	if e.Anonymous {
+		msg += "; unauthenticated requests are limited to 60/hour, set GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or run 'gh auth login', for 5,000/hour"
+	}
+	return msg
+}
+
+// rateLimitError returns a RateLimitError when a 403 or 429 response reports
+// an exceeded rate limit, following GitHub's guidance: honor Retry-After when
+// present, else X-RateLimit-Reset when no requests remain, else wait at least
+// a minute for a secondary limit. It returns nil for other 403 responses.
+func (c *Client) rateLimitError(resp *http.Response, body []byte, now time.Time) *RateLimitError {
+	anonymous := c.token == ""
+	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
+		return &RateLimitError{ResetAt: now.Add(time.Duration(seconds) * time.Second), Secondary: true, Anonymous: anonymous}
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		resetUnix, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
+		return &RateLimitError{ResetAt: time.Unix(resetUnix, 0), Anonymous: anonymous}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || bytes.Contains(bytes.ToLower(body), []byte("secondary rate limit")) {
+		return &RateLimitError{ResetAt: now.Add(time.Minute), Secondary: true, Anonymous: anonymous}
+	}
+	return nil
 }
 
 // NotFoundError is returned when the requested resource is not found.
@@ -150,11 +198,9 @@ func (c *Client) doRequest(path string) (body []byte, err error) {
 			return nil, fmt.Errorf("authentication failed for %s (HTTP 401): no token is configured; set GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or run 'gh auth login --hostname %s'", host, host)
 		}
 		return nil, fmt.Errorf("authentication failed for %s (HTTP 401): the token was rejected; check 'gh auth status --hostname %s' or the token configured via GETRELEASE_TOKEN, GH_TOKEN, or GITHUB_TOKEN", host, host)
-	case http.StatusForbidden:
-		remaining := resp.Header.Get("X-RateLimit-Remaining")
-		if remaining == "0" {
-			resetUnix, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
-			return nil, &RateLimitError{ResetAt: time.Unix(resetUnix, 0)}
+	case http.StatusForbidden, http.StatusTooManyRequests:
+		if rateErr := c.rateLimitError(resp, body, time.Now()); rateErr != nil {
+			return nil, rateErr
 		}
 		return nil, fmt.Errorf("forbidden: %s", string(body))
 	default:
@@ -251,13 +297,27 @@ func (c *Client) ListReleases(owner, repo string, limit int) ([]Release, error) 
 // assets are only served through the API; GitHub redirects to a signed
 // storage URL and Go's http.Client strips the Authorization header on that
 // cross-host redirect.
+//
+// The client's overall request timeout does not apply: the download is
+// instead aborted when no data arrives for the stall timeout, so slow but
+// progressing downloads of large assets complete. A partially written file
+// is removed on failure. Rate limits are detected from response headers or a
+// bounded error-body preview.
 func (c *Client) DownloadAsset(asset Asset, destPath string) (n int64, err error) {
 	downloadURL := asset.DownloadURL
 	if c.token != "" && asset.APIURL != "" && c.isTrustedDownloadHost(asset.APIURL) {
 		downloadURL = asset.APIURL
 	}
 
-	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
+	stallTimeout := cmp.Or(c.downloadStallTimeout, defaultDownloadStallTimeout)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	stall := time.AfterFunc(stallTimeout, func() {
+		cancel(fmt.Errorf("%w: no data received for %s", errDownloadStalled, stallTimeout))
+	})
+	defer stall.Stop()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("creating download request: %w", err)
 	}
@@ -266,9 +326,11 @@ func (c *Client) DownloadAsset(asset Asset, destPath string) (n int64, err error
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	httpClient := *c.httpClient
+	httpClient.Timeout = 0
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("downloading asset: %w", err)
+		return 0, fmt.Errorf("downloading asset: %w", downloadError(ctx, err))
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -277,6 +339,18 @@ func (c *Client) DownloadAsset(asset Asset, destPath string) (n int64, err error
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			if rateErr := c.rateLimitError(resp, nil, time.Now()); rateErr != nil {
+				return 0, rateErr
+			}
+			body, readErr := io.ReadAll(io.LimitReader(&stallResetReader{r: resp.Body, stall: stall, timeout: stallTimeout}, maxDownloadErrorBodySize))
+			if readErr != nil {
+				return 0, fmt.Errorf("reading download error response body: %w", downloadError(ctx, readErr))
+			}
+			if rateErr := c.rateLimitError(resp, body, time.Now()); rateErr != nil {
+				return 0, rateErr
+			}
+		}
 		return 0, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
@@ -288,11 +362,40 @@ func (c *Client) DownloadAsset(asset Asset, destPath string) (n int64, err error
 		if closeErr := out.Close(); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("closing destination file %s: %w", destPath, closeErr))
 		}
+		if err != nil {
+			if removeErr := os.Remove(destPath); removeErr != nil {
+				err = errors.Join(err, fmt.Errorf("removing partial download %s: %w", destPath, removeErr))
+			}
+		}
 	}()
 
-	n, err = io.Copy(out, resp.Body)
+	n, err = io.Copy(out, &stallResetReader{r: resp.Body, stall: stall, timeout: stallTimeout})
 	if err != nil {
-		return n, fmt.Errorf("writing asset to disk: %w", err)
+		return n, fmt.Errorf("writing asset to disk: %w", downloadError(ctx, err))
 	}
 	return n, nil
+}
+
+// stallResetReader restarts the stall timer whenever data is read.
+type stallResetReader struct {
+	r       io.Reader
+	stall   *time.Timer
+	timeout time.Duration
+}
+
+func (s *stallResetReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.stall.Reset(s.timeout)
+	}
+	return n, err
+}
+
+// downloadError reports a stall as the cause instead of the generic
+// "context canceled" the HTTP client returns.
+func downloadError(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); errors.Is(cause, errDownloadStalled) {
+		return cause
+	}
+	return err
 }
