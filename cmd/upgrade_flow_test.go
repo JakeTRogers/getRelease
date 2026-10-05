@@ -80,7 +80,7 @@ func TestRunUpgradeDryRun(t *testing.T) {
 	if err := runUpgrade(cmd, []string{"tool"}); err != nil {
 		t.Fatalf("runUpgrade() error: %v", err)
 	}
-	if !strings.Contains(out.String(), "Would upgrade https://github.com/cli/tool/releases from v1.0.0 to v2.0.0") {
+	if !strings.Contains(out.String(), "Would upgrade cli/tool from v1.0.0 to v2.0.0") {
 		t.Fatalf("runUpgrade() output = %q, want dry-run summary", out.String())
 	}
 }
@@ -127,7 +127,9 @@ func TestRunUpgradeDryRunUsesRecordedHost(t *testing.T) {
 	if gotHost != "acme.ghe.com" {
 		t.Fatalf("newGitHubClient host = %q, want %q", gotHost, "acme.ghe.com")
 	}
-	if !strings.Contains(out.String(), "Would upgrade https://acme.ghe.com/cli/tool/releases from v1.0.0 to v2.0.0") {
+	// The recorded host shows up in the release notes link.
+	if !strings.Contains(out.String(), "Would upgrade cli/tool from v1.0.0 to v2.0.0") ||
+		!strings.Contains(out.String(), "Review the release notes: https://acme.ghe.com/cli/tool/releases/tag/v2.0.0") {
 		t.Fatalf("runUpgrade() output = %q, want dry-run summary with enterprise host", out.String())
 	}
 }
@@ -226,7 +228,7 @@ func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	if !strings.Contains(out.String(), "Summary: 3 checked, 1 would upgrade, 1 unchanged, 1 skipped (missing), 1 failed") {
 		t.Fatalf("runUpgradeAll() output = %q, want summary", out.String())
 	}
-	if !strings.Contains(out.String(), "==> cli/current : https://github.com/cli/current/releases") {
+	if !strings.Contains(out.String(), "==> cli/current\n") {
 		t.Fatalf("runUpgradeAll() output = %q, want clickable releases header", out.String())
 	}
 	if !strings.Contains(out.String(), "Pin policy: patch (locked to exact release v1.0.0)") {
@@ -342,7 +344,7 @@ func TestUpgradeRecordInstallsBinaryAndUpdatesHistory(t *testing.T) {
 	if !upgraded {
 		t.Fatal("upgradeRecord() upgraded = false, want true")
 	}
-	if !strings.Contains(out.String(), "Upgraded https://github.com/cli/tool/releases to v1.0.1") {
+	if !strings.Contains(out.String(), "Upgraded cli/tool to v1.0.1\nReview the release notes: https://github.com/cli/tool/releases/tag/v1.0.1\n") {
 		t.Fatalf("upgradeRecord() output = %q, want upgrade completion", out.String())
 	}
 

@@ -112,7 +112,7 @@ func TestRunUpgradeUnpinnedUsesLatestRelease(t *testing.T) {
 	if err := runUpgrade(cmd, []string{"tool"}); err != nil {
 		t.Fatalf("runUpgrade() error: %v", err)
 	}
-	if !strings.Contains(out.String(), "Would upgrade https://github.com/cli/tool/releases from v1.0.0 to v1.0.1") {
+	if !strings.Contains(out.String(), "Would upgrade cli/tool from v1.0.0 to v1.0.1") {
 		t.Fatalf("runUpgrade() output = %q, want dry-run summary", out.String())
 	}
 }

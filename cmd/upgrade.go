@@ -155,7 +155,7 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	for i := range records {
 		rec := records[i]
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s : %s\n", rec.Owner, rec.Repo, githubRepoReleasesURL(rec.Host, rec.Owner, rec.Repo)); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s\n", rec.Owner, rec.Repo); err != nil {
 			return fmt.Errorf("writing upgrade header for %s/%s: %w", rec.Owner, rec.Repo, err)
 		}
 
@@ -305,7 +305,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	// Dry-run: show what would happen
 	if dryRun {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Would upgrade %s from %s to %s\n", githubRepoReleasesURL(rec.Host, owner, repo), rec.Tag, release.TagName); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Would upgrade %s/%s from %s to %s\n", owner, repo, rec.Tag, release.TagName); err != nil {
 			return false, fmt.Errorf("writing dry-run upgrade summary: %w", err)
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Asset: %s (%s)\n", chosen.Name, formatBytes(chosen.Size)); err != nil {
@@ -313,6 +313,9 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Download URL: %s\n", chosen.DownloadURL); err != nil {
 			return false, fmt.Errorf("writing dry-run download URL: %w", err)
+		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Review the release notes: %s\n", githubReleasePageURL(rec.Host, owner, repo, release)); err != nil {
+			return false, fmt.Errorf("writing dry-run release notes link: %w", err)
 		}
 		return true, nil
 	}
@@ -399,8 +402,11 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		return false, fmt.Errorf("saving history: %w", err)
 	}
 
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s to %s\n", githubRepoReleasesURL(rec.Host, owner, repo), release.TagName); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s/%s to %s\n", owner, repo, release.TagName); err != nil {
 		return false, fmt.Errorf("writing upgrade completion: %w", err)
+	}
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Review the release notes: %s\n", githubReleasePageURL(rec.Host, owner, repo, release)); err != nil {
+		return false, fmt.Errorf("writing release notes link: %w", err)
 	}
 	return true, nil
 }
