@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
 	"github.com/JakeTRogers/getRelease/internal/archive"
@@ -61,8 +62,19 @@ extracts archives, and installs selected binaries to a configurable
 target directory.
 
 Specify a repository using --owner and --repo flags or a --url flag.
-By default, the latest release is fetched and assets matching the
-current OS and architecture are presented for selection.`,
+By default, the latest release is installed. The asset matching the
+current OS and architecture is selected automatically, with a prompt
+when several match equally well.`,
+	Example: `  # Install the latest release
+  getRelease --owner sharkdp --repo bat
+  getRelease --url https://github.com/junegunn/fzf
+
+  # Install a specific release, or only download it
+  getRelease -o junegunn -r fzf --tag v0.66.0
+  getRelease -o sharkdp -r fd --download-only
+
+  # Upgrade everything installed with getRelease
+  getRelease upgrade --all`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -230,8 +242,26 @@ func canonicalRepoName(owner, repo string, rel *github.Release) (string, string)
 	return urlOwner, urlRepo
 }
 
+// anyFlagChanged reports whether any flag was set on the command line.
+func anyFlagChanged(cmd *cobra.Command) bool {
+	changed := false
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		changed = changed || f.Changed
+	})
+	return changed
+}
+
 // runRoot implements the full download/extract/select/install pipeline.
-func runRoot(cmd *cobra.Command, _ []string) error {
+func runRoot(cmd *cobra.Command, args []string) error {
+	// Validate here to preserve Cobra's typo suggestions during command lookup.
+	if err := cobra.NoArgs(cmd, args); err != nil {
+		return err
+	}
+	if !anyFlagChanged(cmd) {
+		// Bare invocation: show how to use the tool rather than an error.
+		return cmd.Help()
+	}
+
 	owner, repo, host, err := resolveRepo(cmd)
 	if err != nil {
 		return err
