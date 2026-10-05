@@ -16,14 +16,19 @@ import (
 //   - https://github.com/owner/repo/
 //   - github.com/owner/repo
 //   - https://acme.ghe.com/owner/repo
+//   - git@github.com:owner/repo.git (git's scp-like SSH syntax)
+//   - ssh://git@github.com/owner/repo.git
 func ParseRepoURL(rawURL string) (owner, repo, host string, err error) {
 	if rawURL == "" {
 		return "", "", "", errors.New("empty URL")
 	}
 
-	// Add scheme if missing so url.Parse works correctly
+	// Rewrite scp-like SSH syntax as a URL, and add a scheme if missing, so
+	// url.Parse works correctly.
 	normalized := rawURL
-	if !strings.Contains(normalized, "://") {
+	if scpHost, scpPath, ok := splitSCPLikeURL(rawURL); ok {
+		normalized = "https://" + scpHost + "/" + scpPath
+	} else if !strings.Contains(normalized, "://") {
 		normalized = "https://" + normalized
 	}
 
@@ -50,4 +55,25 @@ func ParseRepoURL(rawURL string) (owner, repo, host string, err error) {
 	repo = strings.TrimSuffix(parts[1], ".git")
 
 	return owner, repo, host, nil
+}
+
+// splitSCPLikeURL splits git's scp-like SSH syntax, [user@]host:path, into
+// host and path. As in git, it applies when there is no scheme and a colon
+// comes before the first slash; a colon followed by digits and a slash is
+// taken as a port instead ("github.com:443/owner/repo").
+func splitSCPLikeURL(raw string) (host, path string, ok bool) {
+	if strings.Contains(raw, "://") {
+		return "", "", false
+	}
+	hostPart, path, found := strings.Cut(raw, ":")
+	if !found || strings.Contains(hostPart, "/") {
+		return "", "", false
+	}
+	if port, _, hasSlash := strings.Cut(path, "/"); hasSlash && port != "" && strings.Trim(port, "0123456789") == "" {
+		return "", "", false
+	}
+	if _, afterUser, hasUser := strings.Cut(hostPart, "@"); hasUser {
+		hostPart = afterUser
+	}
+	return hostPart, path, hostPart != ""
 }

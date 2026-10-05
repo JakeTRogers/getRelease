@@ -117,7 +117,7 @@ func init() {
 	// Root-specific flags
 	rootCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	rootCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
-	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
+	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL (https or git@host:owner/repo)")
 	rootCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	rootCmd.Flags().StringP("tag", "t", "", "release tag/version (default: latest)")
 	rootCmd.Flags().BoolP("download-only", "d", false, "download without installing; archives are extracted unless autoExtract is false")

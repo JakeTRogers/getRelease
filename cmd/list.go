@@ -25,7 +25,7 @@ for a specific release instead.`,
 func init() {
 	listCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	listCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
-	listCmd.Flags().StringP("url", "u", "", "GitHub repository URL")
+	listCmd.Flags().StringP("url", "u", "", "GitHub repository URL (https or git@host:owner/repo)")
 	listCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
 	listCmd.Flags().StringP("tag", "t", "", "list assets for this release tag instead of listing releases")
 	listCmd.Flags().IntP("limit", "l", 30, "number of releases to show")
