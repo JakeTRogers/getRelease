@@ -1,3 +1,10 @@
+## v1.6.0 (2026-10-04)
+
+### Feat
+
+- **cmd**: delete downloads after a successful install or upgrade
+- **cmd**: accept owner/repo[@tag] as a positional repository argument
+
 ## v1.5.0 (2026-10-04)
 
 ### Feat

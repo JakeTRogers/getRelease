@@ -57,6 +57,62 @@ func ParseRepoURL(rawURL string) (owner, repo, host string, err error) {
 	return owner, repo, host, nil
 }
 
+// RepoRef is a repository named by a single command-line argument.
+type RepoRef struct {
+	Owner string
+	Repo  string
+	Host  string // empty when the argument names no host
+	Tag   string // empty when the argument names no tag
+}
+
+// ParseRepoRef parses a repository argument in one of these forms:
+//   - owner/repo[@tag], naming no host
+//   - host/owner/repo[@tag], such as acme.ghe.com/owner/repo@v1.0.0
+//   - any repository URL accepted by ParseRepoURL, without a tag
+//
+// The tag follows the first '@', since owner and repository names cannot
+// contain one, so the tag may itself contain '@' or '/' (pkg@1.2.0,
+// release/1.0). An '@' in a URL with a scheme or in git's scp-like syntax is
+// part of the URL instead, so those forms take no tag.
+func ParseRepoRef(s string) (RepoRef, error) {
+	// Every accepted form has an owner/repo path.
+	if !strings.Contains(s, "/") {
+		return RepoRef{}, invalidRepoRefError(s)
+	}
+	before, tag, hasTag := strings.Cut(s, "@")
+	if strings.Contains(before, ":") || !strings.Contains(before, "/") {
+		owner, repo, host, err := ParseRepoURL(s)
+		if err != nil {
+			return RepoRef{}, err
+		}
+		if strings.Contains(repo, "@") {
+			return RepoRef{}, fmt.Errorf("invalid repository %q: a tag cannot follow a URL with a scheme; use --tag, or write it as host/owner/repo@tag", s)
+		}
+		return RepoRef{Owner: owner, Repo: repo, Host: host}, nil
+	}
+	if hasTag && tag == "" {
+		return RepoRef{}, fmt.Errorf("invalid repository %q: missing tag after @", s)
+	}
+
+	if strings.Count(before, "/") > 1 {
+		owner, repo, host, err := ParseRepoURL(before)
+		if err != nil {
+			return RepoRef{}, err
+		}
+		return RepoRef{Owner: owner, Repo: repo, Host: host, Tag: tag}, nil
+	}
+
+	owner, repo, _ := strings.Cut(before, "/")
+	if owner == "" || repo == "" {
+		return RepoRef{}, invalidRepoRefError(s)
+	}
+	return RepoRef{Owner: owner, Repo: repo, Tag: tag}, nil
+}
+
+func invalidRepoRefError(s string) error {
+	return fmt.Errorf("invalid repository %q: use [host/]owner/repo[@tag] or a repository URL", s)
+}
+
 // splitSCPLikeURL splits git's scp-like SSH syntax, [user@]host:path, into
 // host and path. As in git, it applies when there is no scheme and a colon
 // comes before the first slash; a colon followed by digits and a slash is

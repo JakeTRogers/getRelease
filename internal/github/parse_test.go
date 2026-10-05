@@ -1,6 +1,7 @@
 package github
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -169,6 +170,57 @@ func TestParseRepoURL(t *testing.T) {
 			}
 			if host != tt.wantHost {
 				t.Errorf("ParseRepoURL(%q) host = %q, want %q", tt.url, host, tt.wantHost)
+			}
+		})
+	}
+}
+
+func TestParseRepoRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ref     string
+		want    RepoRef
+		wantErr string
+	}{
+		{name: "owner/repo", ref: "sharkdp/bat", want: RepoRef{Owner: "sharkdp", Repo: "bat"}},
+		{name: "owner/repo with tag", ref: "junegunn/fzf@v0.66.0", want: RepoRef{Owner: "junegunn", Repo: "fzf", Tag: "v0.66.0"}},
+		{name: "tag containing @", ref: "owner/repo@pkg@1.2.0", want: RepoRef{Owner: "owner", Repo: "repo", Tag: "pkg@1.2.0"}},
+		{name: "tag containing /", ref: "owner/repo@release/1.0", want: RepoRef{Owner: "owner", Repo: "repo", Tag: "release/1.0"}},
+		{name: "enterprise host", ref: "acme.ghe.com/org/repo", want: RepoRef{Owner: "org", Repo: "repo", Host: "acme.ghe.com"}},
+		{name: "enterprise host with tag", ref: "acme.ghe.com/org/repo@v1.0.0", want: RepoRef{Owner: "org", Repo: "repo", Host: "acme.ghe.com", Tag: "v1.0.0"}},
+		{name: "github.com host", ref: "github.com/owner/repo", want: RepoRef{Owner: "owner", Repo: "repo", Host: "github.com"}},
+		{name: "HTTPS URL", ref: "https://github.com/owner/repo", want: RepoRef{Owner: "owner", Repo: "repo", Host: "github.com"}},
+		{name: "enterprise HTTPS URL", ref: "https://acme.ghe.com/org/repo", want: RepoRef{Owner: "org", Repo: "repo", Host: "acme.ghe.com"}},
+		{name: "scp-like SSH URL", ref: "git@acme.ghe.com:org/repo.git", want: RepoRef{Owner: "org", Repo: "repo", Host: "acme.ghe.com"}},
+		{name: "ssh scheme URL", ref: "ssh://git@github.com/owner/repo.git", want: RepoRef{Owner: "owner", Repo: "repo", Host: "github.com"}},
+		{name: "owner only", ref: "owner", wantErr: "use [host/]owner/repo[@tag]"},
+		{name: "owner only with tag", ref: "owner@v1.0.0", wantErr: "use [host/]owner/repo[@tag]"},
+		{name: "missing owner", ref: "/repo", wantErr: "use [host/]owner/repo[@tag]"},
+		{name: "missing repo", ref: "owner/", wantErr: "use [host/]owner/repo[@tag]"},
+		{name: "empty tag", ref: "owner/repo@", wantErr: "missing tag after @"},
+		{name: "empty tag after host", ref: "acme.ghe.com/org/repo@", wantErr: "missing tag after @"},
+		{name: "tag after URL with scheme", ref: "https://github.com/owner/repo@v1.0.0", wantErr: "use --tag"},
+		{name: "unsupported URL host", ref: "https://gitlab.com/owner/repo", wantErr: "not a supported GitHub URL"},
+		{name: "unsupported bare host", ref: "gitlab.com/owner/repo", wantErr: "not a supported GitHub URL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseRepoRef(tt.ref)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ParseRepoRef(%q) error = %v, want substring %q", tt.ref, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRepoRef(%q) error = %v", tt.ref, err)
+			}
+			if got != tt.want {
+				t.Errorf("ParseRepoRef(%q) = %+v, want %+v", tt.ref, got, tt.want)
 			}
 		})
 	}

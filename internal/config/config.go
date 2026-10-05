@@ -36,6 +36,10 @@ type AppConfig struct {
 	// AutoExtract controls whether --download-only extracts archives.
 	// Installs and upgrades always extract archives to find their binaries.
 	AutoExtract bool `mapstructure:"autoExtract" yaml:"autoExtract"`
+	// KeepDownloads keeps each install's work directory under DownloadDir
+	// after its binaries are installed; by default it is removed. Set it when
+	// InstallCommand links to the downloaded file instead of copying it.
+	KeepDownloads bool `mapstructure:"keepDownloads" yaml:"keepDownloads"`
 	// Token authenticates GitHub API requests. Prefer the GETRELEASE_TOKEN,
 	// GH_TOKEN, or GITHUB_TOKEN environment variables over storing it here.
 	Token string `mapstructure:"token" yaml:"token"`
@@ -61,6 +65,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("installDir", DefaultInstallDir())
 	v.SetDefault("installCommand", "sudo install -m 755 {source} {target}")
 	v.SetDefault("autoExtract", true)
+	v.SetDefault("keepDownloads", false)
 	v.SetDefault("token", "")
 	v.SetDefault("cooldown", 10)
 	v.SetDefault("trustedOwners", []string{})

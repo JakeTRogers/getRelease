@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -409,6 +410,99 @@ func TestUpgradeRecordVersionedAssetRefreshesBinaryName(t *testing.T) {
 	want := []history.Binary{{Name: "shfmt_v3.14.1_linux_amd64", InstalledAs: "shfmt", InstallPath: targetPath}}
 	if len(records) != 1 || !reflect.DeepEqual(records[0].Binaries, want) {
 		t.Fatalf("history binaries after upgrade = %+v, want %+v", records, want)
+	}
+}
+
+func TestUpgradeRecordDownloadCleanup(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run("keepDownloads="+strconv.FormatBool(keep), func(t *testing.T) {
+			baseDir := t.TempDir()
+			useTestCommandDeps(t, &fakeReleaseClient{
+				getLatestRelease: func(owner, repo string) (*github.Release, error) {
+					return &github.Release{TagName: "v1.0.1", Assets: []github.Asset{{Name: "tool_linux_amd64"}}}, nil
+				},
+				downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+					return writeDownloadedBinary(t, destPath), nil
+				},
+			})
+
+			targetPath := filepath.Join(baseDir, "bin", "tool")
+			writeExecutableFile(t, targetPath)
+			rec := newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64", "tool", targetPath)
+			store := history.NewStore(filepath.Join(baseDir, "history.json"))
+			if err := store.Add(rec); err != nil {
+				t.Fatalf("add history record: %v", err)
+			}
+
+			downloadDir := filepath.Join(baseDir, "downloads")
+			cfg := &config.AppConfig{DownloadDir: downloadDir, InstallDir: filepath.Dir(targetPath), KeepDownloads: keep}
+			cmd := &cobra.Command{}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+
+			if _, err := upgradeRecord(cmd, store, cfg, &rec, false, disabledCooldown()); err != nil {
+				t.Fatalf("upgradeRecord() error: %v", err)
+			}
+
+			kept, err := filepath.Glob(filepath.Join(downloadDir, "tool-*", "tool_linux_amd64"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reported := strings.Contains(out.String(), "Removed download directory "+downloadDir)
+			if keep && (len(kept) != 1 || reported) {
+				t.Fatalf("keepDownloads: kept %v, cleanup reported %v, want the download kept", kept, reported)
+			}
+			if !keep && (len(kept) != 0 || !reported) {
+				t.Fatalf("default: kept %v, cleanup reported %v, want the download removed\n%s", kept, reported, out.String())
+			}
+		})
+	}
+}
+
+func TestUpgradeRecordKeepsDownloadWhenHistorySaveFails(t *testing.T) {
+	baseDir := t.TempDir()
+	var assetPath string
+	useTestCommandDeps(t, &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{TagName: "v1.0.1", Assets: []github.Asset{{Name: "tool_linux_amd64.tar.gz"}}}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			assetPath = destPath
+			return writeTarGz(t, destPath, map[string][]byte{"tool": []byte("#!/bin/sh\nexit 0\n")}), nil
+		},
+	})
+
+	targetPath := filepath.Join(baseDir, "bin", "tool")
+	writeExecutableFile(t, targetPath)
+	rec := newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool_linux_amd64.tar.gz", "tool", targetPath)
+	storePath := filepath.Join(baseDir, "history.json")
+	if err := os.Mkdir(storePath, 0o755); err != nil {
+		t.Fatalf("block history file: %v", err)
+	}
+	store := history.NewStore(storePath)
+	if err := store.Add(rec); err != nil {
+		t.Fatalf("add history record: %v", err)
+	}
+
+	cfg := &config.AppConfig{DownloadDir: filepath.Join(baseDir, "downloads"), InstallDir: filepath.Dir(targetPath)}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	upgraded, err := upgradeRecord(cmd, store, cfg, &rec, false, disabledCooldown())
+	if err == nil || !strings.Contains(err.Error(), "saving history:") {
+		t.Fatalf("upgradeRecord() error = %v, want history save failure", err)
+	}
+	if upgraded {
+		t.Fatal("upgradeRecord() upgraded = true, want false on history save failure")
+	}
+	for _, path := range []string{assetPath, filepath.Join(filepath.Dir(assetPath), extractedDirName, "tool"), targetPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("recovery file %s missing after history save failure: %v", path, err)
+		}
+	}
+	if strings.Contains(out.String(), "Removed download directory") || strings.Contains(out.String(), "Upgraded cli/tool") {
+		t.Fatalf("upgradeRecord() output = %q, want no cleanup or success message", out.String())
 	}
 }
 

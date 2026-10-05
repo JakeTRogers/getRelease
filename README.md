@@ -2,18 +2,19 @@
 
 ## Description
 
-getRelease is a Go CLI for downloading GitHub release assets, extracting archives, installing binaries, and tracking what was installed so later upgrades can be automated. It can target a repository by owner and repo name or by full GitHub URL, prefers assets that match the current platform, and falls back to interactive selection when more than one candidate fits.
+getRelease is a Go CLI for downloading GitHub release assets, extracting archives, installing binaries, and tracking what was installed so later upgrades can be automated. It can target a repository as `owner/repo[@tag]`, by owner and repo name, or by full GitHub URL, prefers assets that match the current platform, and falls back to interactive selection when more than one candidate fits.
 
 ## Features
 
 - Install the latest release or a specific tag from any GitHub repository.
-- Target repositories with `--owner` and `--repo` or a single `--url`.
+- Target repositories as `owner/repo[@tag]`, a repository URL, `--owner` and `--repo`, or `--url`.
 - Match assets by operating system, architecture, and preferred archive formats.
 - Auto-select the best asset when there is a clear winner, otherwise prompt interactively.
 - Extract common archive formats including `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar`, and `.zip`.
 - Install one binary or multiple binaries from the selected asset.
 - Rename a single installed binary with `--install-as`.
 - Skip installation and keep the downloaded payload with `--download-only`.
+- Delete downloaded assets once they are installed, or keep them with `keepDownloads`.
 - Track install history for upgrades, version pinning, shell completion, and cleanup workflows.
 - Upgrade one installed package or every installed package still present on disk.
 - Manage config and history from built-in `config` and `history` subcommands.
@@ -31,43 +32,55 @@ getRelease is a Go CLI for downloading GitHub release assets, extracting archive
 Install the latest release for a repository:
 
 ```bash
-getRelease --owner sharkdp --repo bat
+getRelease sharkdp/bat
 ```
 
-Install a specific tagged release:
+Install a specific tagged release (everything after the first `@` is the tag):
 
 ```bash
+getRelease junegunn/fzf@0.66.0
+```
+
+The repository can also be given as a GitHub URL, or with flags:
+
+```bash
+getRelease https://github.com/junegunn/fzf
 getRelease --owner junegunn --repo fzf --tag 0.66.0
-```
-
-Resolve the repository from a GitHub URL instead of separate flags:
-
-```bash
 getRelease --url https://github.com/junegunn/fzf
 ```
+
+Name the repository either as an argument or with `--owner`/`--repo` or `--url`, not both. Likewise, give the tag either as `@tag` or with `--tag`. A URL with a scheme (`https://`, `ssh://`, `git@host:`) takes no `@tag`; use `--tag` with it.
 
 Download an asset without installing it:
 
 ```bash
-getRelease --owner sharkdp --repo fd --download-only
+getRelease sharkdp/fd --download-only
 ```
+
+Each download goes into its own directory under `downloadDir` (`~/install` by default). After binaries are installed and install history is saved, that directory is deleted; with `--download-only`, or when installation or history persistence fails, it is left in place. To keep every download:
+
+```bash
+getRelease config set keepDownloads true
+```
+
+Set `keepDownloads` if your `installCommand` symlinks to the downloaded file instead of copying it, since deleting the download would break the link.
 
 Install a single binary under a different name:
 
 ```bash
-getRelease --owner sharkdp --repo bat --install-as bat-preview
+getRelease sharkdp/bat --install-as bat-preview
 ```
 
 List recent releases for a repository:
 
 ```bash
-getRelease list --owner JakeTRogers --repo timeBuddy
+getRelease list JakeTRogers/timeBuddy
 ```
 
 List the assets for a specific release tag:
 
 ```bash
-getRelease list --owner JakeTRogers --repo timeBuddy --tag v2.0.0
+getRelease list JakeTRogers/timeBuddy@v2.0.0
 ```
 
 Preview an upgrade without changing anything:
@@ -158,7 +171,7 @@ Change the cooldown or opt out:
 
 ```bash
 # one-off: disable (or change) the cooldown for a single run
-getRelease --owner sharkdp --repo bat --cooldown 0
+getRelease sharkdp/bat --cooldown 0
 
 # permanently change the window (0 disables it entirely)
 getRelease config set cooldown 5
@@ -186,14 +199,20 @@ If none are found, requests silently fall back to anonymous. Prefer environment 
 getRelease targets `github.com` by default. Targeting a GitHub Enterprise Cloud tenant with data residency (a `*.ghe.com` host) is always explicit — environment variables like `GH_HOST` are deliberately ignored so an ambient setting can never silently retarget a command:
 
 ```bash
-# the URL's host is used directly
+# put the host in front of owner/repo, optionally with @tag
+getRelease acme.ghe.com/acme/tool
+getRelease acme.ghe.com/acme/tool@v1.2.0
+
+# or use a URL, whose host is used directly
+getRelease https://acme.ghe.com/acme/tool
 getRelease --url https://acme.ghe.com/acme/tool
 
-# or name the host explicitly with --owner/--repo
+# or name the host explicitly with owner/repo or --owner/--repo
+getRelease acme/tool --host acme.ghe.com
 getRelease --owner acme --repo tool --host acme.ghe.com
 ```
 
-The host a package was installed from is recorded in install history, so `getRelease upgrade`, and later `--owner`/`--repo` invocations for that same package, target the right host automatically without repeating `--host`.
+The host a package was installed from is recorded in install history, so `getRelease upgrade`, and later `owner/repo` or `--owner`/`--repo` invocations for that same package, target the right host automatically without repeating `--host`.
 
 getRelease derives the REST API endpoint (`https://api.acme.ghe.com`) and web URLs from the host, and passes `--hostname` to `gh auth token` so the right stored credentials are used. Self-hosted GitHub Enterprise Server (with a customer-owned domain and `/api/v3` path) is not supported.
 
@@ -229,6 +248,8 @@ getRelease completion powershell | Out-String | Invoke-Expression
 The completion callbacks are extended to read local install history. That gives you history-backed suggestions for commands such as:
 
 ```bash
+getRelease <TAB>
+getRelease list <TAB>
 getRelease -o <TAB>
 getRelease -o JakeTRogers -r <TAB>
 getRelease upgrade <TAB>
@@ -236,7 +257,7 @@ getRelease pin <TAB>
 getRelease upgrade -o <TAB>
 ```
 
-`upgrade`, `pin`, and `unpin` target suggestions are limited to binaries that are still installed on disk. The `pin --level` flag completes `patch`, `minor`, and `major`.
+`getRelease <TAB>` and `getRelease list <TAB>` suggest every `owner/repo` in history alongside the subcommands. `upgrade`, `pin`, and `unpin` target suggestions are limited to binaries that are still installed on disk. The `pin --level` flag completes `patch`, `minor`, and `major`.
 
 Generate completion scripts explicitly if you prefer to install them into your shell startup files:
 
@@ -251,7 +272,7 @@ getRelease completion powershell
 
 - Asset selection is automatic when there is exactly one match or one clearly preferred match for the current platform.
 - When an archive contains multiple binaries, the CLI can install all of them or prompt you to choose one.
-- Install history is what powers `upgrade`, `pin`, `unpin`, owner and repo completion, and installed-target suggestions.
+- Install history is what powers `upgrade`, `pin`, `unpin`, `owner/repo` argument and owner and repo flag completion, and installed-target suggestions.
 - The exit status is 0 on success, 1 on error, and 2 when an interactive prompt is cancelled (for example with Ctrl-C).
 
 ## Development
