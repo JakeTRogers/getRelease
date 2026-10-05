@@ -112,6 +112,53 @@ func TestRunListAssetsJSON(t *testing.T) {
 	}
 }
 
+func TestRunListRepositoryArgumentWithTagListsAssets(t *testing.T) {
+	client := &fakeReleaseClient{
+		getReleaseByTag: func(owner, repo, tag string) (*github.Release, error) {
+			if owner != "cli" || repo != "tool" || tag != "v2.0.0" {
+				t.Fatalf("GetReleaseByTag() called with %s/%s %s", owner, repo, tag)
+			}
+			return &github.Release{
+				TagName: "v2.0.0",
+				Assets:  []github.Asset{{Name: "tool_linux_amd64.tar.gz", Size: 4096}},
+			}, nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	cmd := &cobra.Command{}
+	addListTestFlags(cmd)
+	if err := cmd.Flags().Set("format", "json"); err != nil {
+		t.Fatalf("set format: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runList(cmd, []string{"cli/tool@v2.0.0"}); err != nil {
+		t.Fatalf("runList() error: %v", err)
+	}
+
+	var got []github.Asset
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "tool_linux_amd64.tar.gz" {
+		t.Fatalf("runList() assets = %+v, want one tagged asset", got)
+	}
+}
+
+func TestListRejectsInvalidRepositoryArgument(t *testing.T) {
+	cmd := &cobra.Command{}
+	addListTestFlags(cmd)
+	if err := validateRepoArgs(cmd, []string{"tool"}); err != nil {
+		t.Fatalf("validateRepoArgs() error = %v, want the argument left to resolveRepo", err)
+	}
+	if err := runList(cmd, []string{"tool"}); err == nil || !strings.Contains(err.Error(), `invalid repository "tool"`) {
+		t.Fatalf("runList(tool) error = %v, want invalid repository error", err)
+	}
+}
+
 func TestListReleasesMarksPrereleasesAndDrafts(t *testing.T) {
 	published := time.Date(2026, time.October, 4, 0, 0, 0, 0, time.UTC)
 	client := &fakeReleaseClient{

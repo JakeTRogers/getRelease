@@ -56,23 +56,28 @@ type cooldownReport struct {
 
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
-	Use:   "getRelease",
+	Use:   "getRelease [owner/repo[@tag] | URL]",
 	Short: "Download, extract, and install binary releases from GitHub",
 	Long: `getRelease downloads binary releases from GitHub repositories,
 extracts archives, and installs selected binaries to a configurable
 target directory.
 
-Specify a repository using --owner and --repo flags or a --url flag.
-By default, the latest release is installed. The asset matching the
-current OS and architecture is selected automatically, with a prompt
-when several match equally well.`,
+Specify a repository as owner/repo, optionally followed by @tag, as
+host/owner/repo for a *.ghe.com host, as a repository URL, or with the
+--owner and --repo or --url flags. By default, the latest release is
+installed. The asset matching the current OS and architecture is
+selected automatically, with a prompt when several match equally well.`,
 	Example: `  # Install the latest release
+  getRelease sharkdp/bat
   getRelease --owner sharkdp --repo bat
-  getRelease --url https://github.com/junegunn/fzf
+  getRelease https://github.com/junegunn/fzf
 
   # Install a specific release, or only download it
-  getRelease -o junegunn -r fzf --tag v0.66.0
-  getRelease -o sharkdp -r fd --download-only
+  getRelease junegunn/fzf@v0.66.0
+  getRelease sharkdp/fd --download-only
+
+  # Install from GitHub Enterprise Cloud
+  getRelease acme.ghe.com/acme/tool
 
   # Upgrade everything installed with getRelease
   getRelease upgrade --all`,
@@ -81,6 +86,7 @@ when several match equally well.`,
 	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		return initConfig(cmd)
 	},
+	Args: validateRepoArgs,
 	RunE: runRoot,
 }
 
@@ -118,7 +124,7 @@ func init() {
 	rootCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	rootCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
 	rootCmd.Flags().StringP("url", "u", "", "GitHub repository URL (https or git@host:owner/repo)")
-	rootCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
+	rootCmd.Flags().String("host", "", hostFlagUsage)
 	rootCmd.Flags().StringP("tag", "t", "", "release tag/version (default: latest)")
 	rootCmd.Flags().BoolP("download-only", "d", false, "download without installing; archives are extracted unless autoExtract is false")
 	rootCmd.Flags().String("install-as", "", "override installed filename when exactly one binary is installed")
@@ -136,9 +142,12 @@ func init() {
 	// presence without calling Execute(); InitDefaultCompletionCmd is a no-op
 	// if a completion command is already registered, so this is safe.
 	rootCmd.InitDefaultCompletionCmd()
+	rootCmd.ValidArgsFunction = completeRepoArg
 	registerOwnerRepoHistoryCompletions(rootCmd, false)
 	mustRegisterFlagCompletion(rootCmd, "format", completeOutputFormatValues)
 }
+
+const hostFlagUsage = "GitHub host for owner/repo or --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)"
 
 // initConfig sets up Viper and configures the slog logger.
 func initConfig(cmd *cobra.Command) error {
@@ -163,44 +172,102 @@ func initConfig(cmd *cobra.Command) error {
 	return nil
 }
 
-// resolveRepo determines the owner, repo, and GitHub host from flags,
-// returning an error if the input is invalid or incomplete. The host is
-// taken from the --url host or the --host flag; with --owner/--repo alone it
-// comes from the repository's install history record, and defaults to
-// github.com for repositories not installed before.
-func resolveRepo(cmd *cobra.Command) (owner, repo, host string, err error) {
+// validateRepoArgs accepts at most one repository argument, as parsed by
+// github.ParseRepoRef in resolveRepo. On a command with subcommands, an
+// argument without a slash is more likely a mistyped subcommand than a
+// repository, so it is reported as Cobra reports unknown commands, with
+// suggestions.
+func validateRepoArgs(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if cmd.HasSubCommands() && !strings.Contains(args[0], "/") {
+		return unknownCommandError(cmd, args[0])
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("accepts at most one repository argument, received %d", len(args))
+	}
+	return nil
+}
+
+// unknownCommandError returns Cobra's error for an unknown subcommand,
+// including its "Did you mean this?" suggestions. Cobra only produces it
+// itself for commands that do not validate their own arguments.
+func unknownCommandError(cmd *cobra.Command, arg string) error {
+	var suggestions strings.Builder
+	if !cmd.DisableSuggestions {
+		if cmd.SuggestionsMinimumDistance <= 0 {
+			cmd.SuggestionsMinimumDistance = 2
+		}
+		if names := cmd.SuggestionsFor(arg); len(names) > 0 {
+			suggestions.WriteString("\n\nDid you mean this?\n")
+			for _, name := range names {
+				_, _ = fmt.Fprintf(&suggestions, "\t%v\n", name)
+			}
+		}
+	}
+	return fmt.Errorf("unknown command %q for %q%s", arg, cmd.CommandPath(), suggestions.String())
+}
+
+// resolveRepo determines the owner, repo, GitHub host, and requested tag
+// from the repository argument or flags, returning an error if the input is
+// invalid, incomplete, or names the repository or tag twice. The host is
+// taken from the argument or --url when they name one, or from the --host
+// flag; otherwise it comes from the repository's install history record,
+// and defaults to github.com for repositories not installed before. The tag
+// is empty when the latest release is wanted.
+func resolveRepo(cmd *cobra.Command, args []string) (owner, repo, host, tag string, err error) {
 	urlFlag, _ := cmd.Flags().GetString("url")
 	ownerFlag, _ := cmd.Flags().GetString("owner")
 	repoFlag, _ := cmd.Flags().GetString("repo")
 	hostFlag, _ := cmd.Flags().GetString("host")
+	tag, _ = cmd.Flags().GetString("tag")
 
-	if urlFlag != "" {
+	switch {
+	case len(args) > 0:
+		if urlFlag != "" || ownerFlag != "" || repoFlag != "" {
+			return "", "", "", "", errors.New("specify the repository either as an argument or with --owner/--repo or --url, not both")
+		}
+		ref, err := github.ParseRepoRef(args[0])
+		if err != nil {
+			return "", "", "", "", err
+		}
+		if ref.Tag != "" {
+			if tag != "" {
+				return "", "", "", "", errors.New("specify the tag either as @tag or with --tag, not both")
+			}
+			tag = ref.Tag
+		}
+		if ref.Host != "" {
+			if hostFlag != "" {
+				return "", "", "", "", fmt.Errorf("--host cannot be used with %q, which names its own host", args[0])
+			}
+			return ref.Owner, ref.Repo, ref.Host, tag, nil
+		}
+		ownerFlag, repoFlag = ref.Owner, ref.Repo
+	case urlFlag != "":
 		owner, repo, host, err = github.ParseRepoURL(urlFlag)
 		if err != nil {
-			return "", "", "", fmt.Errorf("parsing URL: %w", err)
+			return "", "", "", "", fmt.Errorf("parsing URL: %w", err)
 		}
-		return owner, repo, host, nil
-	}
-
-	if ownerFlag == "" && repoFlag == "" {
-		return "", "", "", errors.New("specify a repository with --owner and --repo, or use --url")
-	}
-	if ownerFlag == "" {
-		return "", "", "", errors.New("--owner is required when using --repo")
-	}
-	if repoFlag == "" {
-		return "", "", "", errors.New("--repo is required when using --owner")
+		return owner, repo, host, tag, nil
+	case ownerFlag == "" && repoFlag == "":
+		return "", "", "", "", errors.New("specify a repository as owner/repo, with --owner and --repo, or with --url")
+	case ownerFlag == "":
+		return "", "", "", "", errors.New("--owner is required when using --repo")
+	case repoFlag == "":
+		return "", "", "", "", errors.New("--repo is required when using --owner")
 	}
 
 	if hostFlag != "" {
 		host, err = github.NormalizeHost(hostFlag)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
-		return ownerFlag, repoFlag, host, nil
+		return ownerFlag, repoFlag, host, tag, nil
 	}
 
-	return ownerFlag, repoFlag, historyHostFor(ownerFlag, repoFlag), nil
+	return ownerFlag, repoFlag, historyHostFor(ownerFlag, repoFlag), tag, nil
 }
 
 // historyHostFor returns the GitHub host recorded for owner/repo in install
@@ -253,21 +320,16 @@ func anyFlagChanged(cmd *cobra.Command) bool {
 
 // runRoot implements the full download/extract/select/install pipeline.
 func runRoot(cmd *cobra.Command, args []string) error {
-	// Validate here to preserve Cobra's typo suggestions during command lookup.
-	if err := cobra.NoArgs(cmd, args); err != nil {
-		return err
-	}
-	if !anyFlagChanged(cmd) {
+	if len(args) == 0 && !anyFlagChanged(cmd) {
 		// Bare invocation: show how to use the tool rather than an error.
 		return cmd.Help()
 	}
 
-	owner, repo, host, err := resolveRepo(cmd)
+	owner, repo, host, tag, err := resolveRepo(cmd, args)
 	if err != nil {
 		return err
 	}
 
-	tag, _ := cmd.Flags().GetString("tag")
 	format, _ := cmd.Flags().GetString("format")
 	format, err = normalizeOutputFormat(format)
 	if err != nil {

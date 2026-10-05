@@ -30,6 +30,47 @@ func registerOwnerRepoHistoryCompletions(cmd *cobra.Command, presentOnly bool) {
 	})
 }
 
+// completeRepoArg is the ValidArgsFunction for commands that take a
+// repository argument: it suggests owner/repo for every repository in install
+// history, unless a repository is already given.
+func completeRepoArg(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	for _, flag := range []string{"owner", "repo", "url"} {
+		if value, _ := cmd.Flags().GetString(flag); value != "" {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+	}
+
+	records := loadHistoryRecordsForCompletion(false)
+	return completeRepoRefsFromRecords(records, toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeRepoRefsFromRecords(records []history.Record, toComplete string) []cobra.Completion {
+	descriptions := repoTargetDescriptions(records)
+	var completions []cobra.Completion
+	for _, target := range sortedKeys(descriptions) {
+		if !matchesCompletion(target, toComplete) {
+			continue
+		}
+		completions = append(completions, cobra.CompletionWithDesc(target, descriptions[target]))
+	}
+	return completions
+}
+
+// repoTargetDescriptions maps owner/repo for each record to the binaries it
+// installed.
+func repoTargetDescriptions(records []history.Record) map[string]string {
+	descriptions := make(map[string]string)
+	for _, rec := range records {
+		if rec.Owner != "" && rec.Repo != "" {
+			descriptions[rec.Owner+"/"+rec.Repo] = describeRecordBinaries(rec)
+		}
+	}
+	return descriptions
+}
+
 func completeInstalledUpgradeTargets(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -126,14 +167,8 @@ func completeReposFromRecords(records []history.Record, owner, toComplete string
 func completeUpgradeTargetsFromRecords(records []history.Record, toComplete string) []cobra.Completion {
 	binaryMatches := make(map[string]int)
 	binaryDescriptions := make(map[string]string)
-	repoDescriptions := make(map[string]string)
 
 	for _, rec := range records {
-		target := fmt.Sprintf("%s/%s", rec.Owner, rec.Repo)
-		if rec.Owner != "" && rec.Repo != "" {
-			repoDescriptions[target] = describeRecordBinaries(rec)
-		}
-
 		seen := make(map[string]struct{})
 		for _, bin := range rec.Binaries {
 			name := bin.InstalledAs
@@ -166,14 +201,7 @@ func completeUpgradeTargetsFromRecords(records []history.Record, toComplete stri
 		completions = append(completions, cobra.CompletionWithDesc(name, desc))
 	}
 
-	for _, target := range sortedKeys(repoDescriptions) {
-		if !matchesCompletion(target, toComplete) {
-			continue
-		}
-		completions = append(completions, cobra.CompletionWithDesc(target, repoDescriptions[target]))
-	}
-
-	return completions
+	return append(completions, completeRepoRefsFromRecords(records, toComplete)...)
 }
 
 // completeHistoryRemoveTargets is history remove's ValidArgsFunction. It

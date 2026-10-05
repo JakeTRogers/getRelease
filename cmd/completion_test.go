@@ -368,6 +368,51 @@ func TestLoadHistoryRecordsForCompletionAndInstalledTargets(t *testing.T) {
 	}
 }
 
+func TestCompleteRepoArg(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	writeHistoryRecords(t, []history.Record{
+		newHistoryRecord("rec1", "cli", "tool", "v1.0.0", "tool", "tool", filepath.Join(t.TempDir(), "bin", "tool")),
+		newHistoryRecord("rec2", "sharkdp", "bat", "v1.0.0", "bat", "bat", filepath.Join(t.TempDir(), "bin", "bat")),
+	})
+
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("owner", "", "")
+		cmd.Flags().String("repo", "", "")
+		cmd.Flags().String("url", "", "")
+		return cmd
+	}
+
+	got, directive := completeRepoArg(newCmd(), nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completeRepoArg() directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+	// Records whose binaries are no longer on disk are still suggested:
+	// installing a repository does not need a previous install.
+	want := []string{"cli/tool\ttool", "sharkdp/bat\tbat"}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeRepoArg() = %v, want %v", got, want)
+	}
+
+	got, _ = completeRepoArg(newCmd(), nil, "Shark")
+	if want := []string{"sharkdp/bat\tbat"}; !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeRepoArg(Shark) = %v, want %v", got, want)
+	}
+
+	if got, _ := completeRepoArg(newCmd(), []string{"cli/tool"}, ""); len(got) != 0 {
+		t.Fatalf("completeRepoArg() after an argument = %v, want no completions", got)
+	}
+	for _, flag := range []string{"owner", "repo", "url"} {
+		cmd := newCmd()
+		if err := cmd.Flags().Set(flag, "x"); err != nil {
+			t.Fatalf("set %s flag: %v", flag, err)
+		}
+		if got, _ := completeRepoArg(cmd, nil, ""); len(got) != 0 {
+			t.Fatalf("completeRepoArg() with --%s = %v, want no completions", flag, got)
+		}
+	}
+}
+
 func TestPinAndUnpinCommandTargetCompletions(t *testing.T) {
 	useTestCommandDeps(t, nil)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))

@@ -11,14 +11,17 @@ import (
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list",
+	Use:   "list [owner/repo[@tag] | URL]",
 	Short: "List releases or assets for a GitHub repository",
 	Long: `List the most recent releases for a repository, or list the
 downloadable assets for a specific release tag.
 
-By default, the last 30 releases are shown. Use --tag to list assets
-for a specific release instead.`,
+Specify the repository as for the install command: owner/repo,
+host/owner/repo, a repository URL, or the --owner and --repo or --url
+flags. By default, the last 30 releases are shown. Use owner/repo@tag
+or --tag to list assets for a specific release instead.`,
 	SilenceUsage: true,
+	Args:         validateRepoArgs,
 	RunE:         runList,
 }
 
@@ -26,7 +29,7 @@ func init() {
 	listCmd.Flags().StringP("owner", "o", "", "GitHub owner/org name")
 	listCmd.Flags().StringP("repo", "r", "", "GitHub repository name")
 	listCmd.Flags().StringP("url", "u", "", "GitHub repository URL (https or git@host:owner/repo)")
-	listCmd.Flags().String("host", "", "GitHub host for --owner/--repo: github.com (default) or a *.ghe.com host (GitHub Enterprise Cloud with data residency)")
+	listCmd.Flags().String("host", "", hostFlagUsage)
 	listCmd.Flags().StringP("tag", "t", "", "list assets for this release tag instead of listing releases")
 	listCmd.Flags().IntP("limit", "l", 30, "number of releases to show")
 	listCmd.Flags().String("format", "text", "output format: text, json")
@@ -34,19 +37,19 @@ func init() {
 	listCmd.MarkFlagsMutuallyExclusive("url", "owner")
 	listCmd.MarkFlagsMutuallyExclusive("url", "repo")
 	listCmd.MarkFlagsMutuallyExclusive("url", "host")
+	listCmd.ValidArgsFunction = completeRepoArg
 	registerOwnerRepoHistoryCompletions(listCmd, false)
 	mustRegisterFlagCompletion(listCmd, "format", completeOutputFormatValues)
 
 	rootCmd.AddCommand(listCmd)
 }
 
-func runList(cmd *cobra.Command, _ []string) error {
-	owner, repo, host, err := resolveRepo(cmd)
+func runList(cmd *cobra.Command, args []string) error {
+	owner, repo, host, tag, err := resolveRepo(cmd, args)
 	if err != nil {
 		return err
 	}
 
-	tag, _ := cmd.Flags().GetString("tag")
 	format, _ := cmd.Flags().GetString("format")
 	format, err = normalizeOutputFormat(format)
 	if err != nil {

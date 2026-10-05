@@ -81,7 +81,7 @@ func TestRootWithoutArgumentsShowsHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getRelease error: %v", err)
 	}
-	for _, want := range []string{"Usage:", "Examples:", "getRelease --owner sharkdp --repo bat"} {
+	for _, want := range []string{"Usage:", "Examples:", "getRelease sharkdp/bat", "getRelease --owner sharkdp --repo bat"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("getRelease output = %q, want it to contain %q", out, want)
 		}
@@ -138,5 +138,48 @@ func TestRootUnknownCommandKeepsSuggestions(t *testing.T) {
 	_, err := executeRoot(t, "versio")
 	if err == nil || !strings.Contains(err.Error(), "Did you mean this?") || !strings.Contains(err.Error(), "\tversion\n") {
 		t.Fatalf("getRelease versio error = %v, want version suggestion", err)
+	}
+}
+
+func TestRootRejectsMultipleRepositoryArguments(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	useTestCommandDeps(t, nil)
+	newGitHubClient = func(string) (releaseClient, error) {
+		t.Fatal("extra arguments must be rejected before creating a GitHub client")
+		return nil, nil
+	}
+
+	_, err := executeRoot(t, "cli/tool", "cli/other")
+	if err == nil || !strings.Contains(err.Error(), "accepts at most one repository argument, received 2") {
+		t.Fatalf("getRelease cli/tool cli/other error = %v, want argument count error", err)
+	}
+}
+
+func TestRootRepositoryArgumentConflicts(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "owner flag", args: []string{"cli/tool", "--owner", "cli"}, wantErr: "not both"},
+		{name: "url flag", args: []string{"cli/tool", "--url", "https://github.com/cli/tool"}, wantErr: "not both"},
+		{name: "tag flag", args: []string{"cli/tool@v1.0.0", "--tag", "v2.0.0"}, wantErr: "--tag, not both"},
+		{name: "host flag with host argument", args: []string{"acme.ghe.com/cli/tool", "--host", "acme.ghe.com"}, wantErr: "--host cannot be used"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			useTestCommandDeps(t, nil)
+			newGitHubClient = func(string) (releaseClient, error) {
+				t.Fatal("conflicting arguments must be rejected before creating a GitHub client")
+				return nil, nil
+			}
+
+			if _, err := executeRoot(t, tt.args...); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("getRelease %v error = %v, want substring %q", tt.args, err, tt.wantErr)
+			}
+		})
 	}
 }

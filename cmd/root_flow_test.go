@@ -73,16 +73,20 @@ func TestResolveRepo(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		args      []string
 		owner     string
 		repo      string
 		url       string
 		host      string
+		tag       string
 		wantOwner string
 		wantRepo  string
 		wantHost  string
+		wantTag   string
 		wantErr   string
 	}{
 		{name: "owner repo flags default to github.com", owner: "cli", repo: "tool", wantOwner: "cli", wantRepo: "tool", wantHost: "github.com"},
+		{name: "tag flag", owner: "cli", repo: "tool", tag: "v1.0.0", wantOwner: "cli", wantRepo: "tool", wantHost: "github.com", wantTag: "v1.0.0"},
 		{name: "url flag", url: "https://github.com/cli/tool", wantOwner: "cli", wantRepo: "tool", wantHost: "github.com"},
 		{name: "enterprise url carries its host", url: "https://acme.ghe.com/cli/tool", wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com"},
 		{name: "host flag targets enterprise", owner: "cli", repo: "tool", host: "acme.ghe.com", wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com"},
@@ -91,6 +95,18 @@ func TestResolveRepo(t *testing.T) {
 		{name: "missing repo", owner: "cli", wantErr: "--repo is required"},
 		{name: "missing owner", repo: "tool", wantErr: "--owner is required"},
 		{name: "missing all", wantErr: "specify a repository"},
+		{name: "argument defaults to github.com", args: []string{"cli/tool"}, wantOwner: "cli", wantRepo: "tool", wantHost: "github.com"},
+		{name: "argument with tag", args: []string{"cli/tool@v1.0.0"}, wantOwner: "cli", wantRepo: "tool", wantHost: "github.com", wantTag: "v1.0.0"},
+		{name: "argument with tag flag", args: []string{"cli/tool"}, tag: "v1.0.0", wantOwner: "cli", wantRepo: "tool", wantHost: "github.com", wantTag: "v1.0.0"},
+		{name: "argument with host flag", args: []string{"cli/tool"}, host: "acme.ghe.com", wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com"},
+		{name: "enterprise host argument with tag", args: []string{"acme.ghe.com/cli/tool@v1.0.0"}, wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com", wantTag: "v1.0.0"},
+		{name: "url argument", args: []string{"https://acme.ghe.com/cli/tool"}, wantOwner: "cli", wantRepo: "tool", wantHost: "acme.ghe.com"},
+		{name: "invalid argument", args: []string{"cli/tool@"}, wantErr: "missing tag after @"},
+		{name: "argument and owner flag", args: []string{"cli/tool"}, owner: "cli", wantErr: "not both"},
+		{name: "argument and repo flag", args: []string{"cli/tool"}, repo: "tool", wantErr: "not both"},
+		{name: "argument and url flag", args: []string{"cli/tool"}, url: "https://github.com/cli/tool", wantErr: "not both"},
+		{name: "argument tag and tag flag", args: []string{"cli/tool@v1.0.0"}, tag: "v2.0.0", wantErr: "--tag, not both"},
+		{name: "host argument and host flag", args: []string{"acme.ghe.com/cli/tool"}, host: "acme.ghe.com", wantErr: "--host cannot be used"},
 	}
 
 	for _, tt := range tests {
@@ -99,21 +115,15 @@ func TestResolveRepo(t *testing.T) {
 		cmd.Flags().String("repo", "", "")
 		cmd.Flags().String("url", "", "")
 		cmd.Flags().String("host", "", "")
+		cmd.Flags().String("tag", "", "")
 
-		if err := cmd.Flags().Set("owner", tt.owner); err != nil {
-			t.Fatalf("%s: set owner: %v", tt.name, err)
-		}
-		if err := cmd.Flags().Set("repo", tt.repo); err != nil {
-			t.Fatalf("%s: set repo: %v", tt.name, err)
-		}
-		if err := cmd.Flags().Set("url", tt.url); err != nil {
-			t.Fatalf("%s: set url: %v", tt.name, err)
-		}
-		if err := cmd.Flags().Set("host", tt.host); err != nil {
-			t.Fatalf("%s: set host: %v", tt.name, err)
+		for name, value := range map[string]string{"owner": tt.owner, "repo": tt.repo, "url": tt.url, "host": tt.host, "tag": tt.tag} {
+			if err := cmd.Flags().Set(name, value); err != nil {
+				t.Fatalf("%s: set %s: %v", tt.name, name, err)
+			}
 		}
 
-		owner, repo, host, err := resolveRepo(cmd)
+		owner, repo, host, tag, err := resolveRepo(cmd, tt.args)
 		if tt.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("%s: resolveRepo() error = %v, want substring %q", tt.name, err, tt.wantErr)
@@ -128,6 +138,9 @@ func TestResolveRepo(t *testing.T) {
 		}
 		if host != tt.wantHost {
 			t.Fatalf("%s: resolveRepo() host = %q, want %q", tt.name, host, tt.wantHost)
+		}
+		if tag != tt.wantTag {
+			t.Fatalf("%s: resolveRepo() tag = %q, want %q", tt.name, tag, tt.wantTag)
 		}
 	}
 }
@@ -146,11 +159,22 @@ func TestResolveRepoUsesHistoryHost(t *testing.T) {
 		cmd.Flags().String("repo", repo, "")
 		cmd.Flags().String("url", "", "")
 		cmd.Flags().String("host", host, "")
+		cmd.Flags().String("tag", "", "")
 		return cmd
 	}
 
 	t.Run("recorded enterprise host used automatically", func(t *testing.T) {
-		_, _, host, err := resolveRepo(newCmd("cli", "tool", ""))
+		_, _, host, _, err := resolveRepo(newCmd("cli", "tool", ""), nil)
+		if err != nil {
+			t.Fatalf("resolveRepo() error = %v", err)
+		}
+		if host != "acme.ghe.com" {
+			t.Errorf("resolveRepo() host = %q, want %q", host, "acme.ghe.com")
+		}
+	})
+
+	t.Run("recorded enterprise host used for repository argument", func(t *testing.T) {
+		_, _, host, _, err := resolveRepo(newCmd("", "", ""), []string{"cli/tool"})
 		if err != nil {
 			t.Fatalf("resolveRepo() error = %v", err)
 		}
@@ -160,7 +184,7 @@ func TestResolveRepoUsesHistoryHost(t *testing.T) {
 	})
 
 	t.Run("record without host defaults to github.com", func(t *testing.T) {
-		_, _, host, err := resolveRepo(newCmd("cli", "other", ""))
+		_, _, host, _, err := resolveRepo(newCmd("cli", "other", ""), nil)
 		if err != nil {
 			t.Fatalf("resolveRepo() error = %v", err)
 		}
@@ -170,7 +194,7 @@ func TestResolveRepoUsesHistoryHost(t *testing.T) {
 	})
 
 	t.Run("host flag overrides recorded host", func(t *testing.T) {
-		_, _, host, err := resolveRepo(newCmd("cli", "tool", "github.com"))
+		_, _, host, _, err := resolveRepo(newCmd("cli", "tool", "github.com"), nil)
 		if err != nil {
 			t.Fatalf("resolveRepo() error = %v", err)
 		}
@@ -241,6 +265,54 @@ func TestRunRootDownloadOnlyJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(got.DownloadPath); err != nil {
 		t.Fatalf("downloaded file missing: %v", err)
+	}
+}
+
+func TestRunRootRepositoryArgumentWithTag(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
+	client := &fakeReleaseClient{
+		getReleaseByTag: func(owner, repo, tag string) (*github.Release, error) {
+			if owner != "cli" || repo != "tool" || tag != "v1.2.3" {
+				t.Fatalf("GetReleaseByTag() called with %s/%s@%s, want cli/tool@v1.2.3", owner, repo, tag)
+			}
+			return &github.Release{
+				TagName: "v1.2.3",
+				Assets: []github.Asset{{
+					Name:        "tool_linux_amd64",
+					DownloadURL: "https://example.invalid/tool_linux_amd64",
+				}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	}
+	useTestCommandDeps(t, client)
+	setTestConfig(filepath.Join(t.TempDir(), "downloads"), filepath.Join(t.TempDir(), "bin"))
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("download-only", "true"); err != nil {
+		t.Fatalf("set download-only: %v", err)
+	}
+	if err := cmd.Flags().Set("format", "json"); err != nil {
+		t.Fatalf("set format: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runRoot(cmd, []string{"cli/tool@v1.2.3"}); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	var got rootCommandResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if got.Owner != "cli" || got.Repo != "tool" || got.RequestedTag != "v1.2.3" || got.ReleaseTag != "v1.2.3" {
+		t.Fatalf("runRoot() result = %+v, want cli/tool with requested and release tag v1.2.3", got)
 	}
 }
 
