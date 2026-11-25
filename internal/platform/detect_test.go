@@ -3,6 +3,7 @@ package platform
 import (
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -36,13 +37,7 @@ func TestOSKeywords(t *testing.T) {
 			if len(kw) != tt.wantLen {
 				t.Errorf("OSKeywords(%q) len = %d, want %d", tt.os, len(kw), tt.wantLen)
 			}
-			found := false
-			for _, k := range kw {
-				if k == tt.contains {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(kw, tt.contains)
 			if !found {
 				t.Errorf("OSKeywords(%q) = %v, want to contain %q", tt.os, kw, tt.contains)
 			}
@@ -69,13 +64,7 @@ func TestArchKeywords(t *testing.T) {
 			if len(kw) != tt.wantLen {
 				t.Errorf("ArchKeywords(%q) len = %d, want %d", tt.arch, len(kw), tt.wantLen)
 			}
-			found := false
-			for _, k := range kw {
-				if k == tt.contains {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(kw, tt.contains)
 			if !found {
 				t.Errorf("ArchKeywords(%q) = %v, want to contain %q", tt.arch, kw, tt.contains)
 			}

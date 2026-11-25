@@ -1,3 +1,14 @@
+## v1.6.1 (2026-11-25)
+
+### Fix
+
+- **deps**: bump golang.org/x/sys from 0.33.0 to 0.50.0 (#38)
+- **deps**: bump go.yaml.in/yaml/v3 from 3.0.5 to 3.0.6 (#37)
+
+### Refactor
+
+- apply go fix modernizers for 1.27
+
 ## v1.6.0 (2026-10-04)
 
 ### Feat

@@ -180,7 +180,7 @@ func TestListReleasesMarksPrereleasesAndDrafts(t *testing.T) {
 	}
 
 	rows := map[string]string{}
-	for _, line := range strings.Split(out.String(), "\n") {
+	for line := range strings.SplitSeq(out.String(), "\n") {
 		if fields := strings.Fields(line); len(fields) > 0 {
 			rows[fields[0]] = line
 		}

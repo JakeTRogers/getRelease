@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -176,11 +177,8 @@ func validatePath(p string) (string, error) {
 		return "", fmt.Errorf("path must be absolute")
 	}
 	clean := filepath.Clean(p)
-	parts := strings.Split(clean, string(os.PathSeparator))
-	for _, part := range parts {
-		if part == ".." {
-			return "", fmt.Errorf("path must not contain .. elements")
-		}
+	if slices.Contains(strings.Split(clean, string(os.PathSeparator)), "..") {
+		return "", fmt.Errorf("path must not contain .. elements")
 	}
 	return clean, nil
 }

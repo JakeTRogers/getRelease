@@ -99,8 +99,7 @@ func Init(v *viper.Viper) error {
 	v.AddConfigPath(cfgDir)
 
 	if err := v.ReadInConfig(); err != nil {
-		var notFound viper.ConfigFileNotFoundError
-		if !errors.As(err, &notFound) {
+		if _, ok := errors.AsType[viper.ConfigFileNotFoundError](err); !ok {
 			// Only return an error if the file exists but can't be read
 			if _, statErr := os.Stat(v.ConfigFileUsed()); statErr == nil {
 				return fmt.Errorf("reading config file: %w", err)

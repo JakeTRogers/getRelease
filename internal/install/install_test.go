@@ -47,7 +47,6 @@ func TestValidatePath(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := validatePath(tc.input)
@@ -80,7 +79,6 @@ func TestCommandInstaller_InvalidPaths(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if err := ci.Install(src, tc.target); err == nil {
