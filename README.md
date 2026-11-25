@@ -24,7 +24,7 @@ getRelease is a Go CLI for downloading GitHub release assets, extracting archive
 ## Installation
 
 1. Download the binary for your preferred platform from the [releases](https://github.com/JakeTRogers/getRelease/releases) page
-2. Extract the archive. It contains this readme, a copy of the Apache 2.0 license, and the getRelease binary.
+2. Extract the archive. It contains this readme, documentation, and the getRelease binary.
 3. Copy the binary to a directory in your `$PATH`. i.e. `/usr/local/bin`
 
 ## Usage
