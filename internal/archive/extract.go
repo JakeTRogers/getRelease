@@ -385,7 +385,7 @@ func FindBinaries(dir string) ([]string, error) {
 // isInBinDir reports whether the relative path rel has a "bin" directory
 // component.
 func isInBinDir(rel string) bool {
-	for _, part := range strings.Split(filepath.Dir(rel), string(os.PathSeparator)) {
+	for part := range strings.SplitSeq(filepath.Dir(rel), string(os.PathSeparator)) {
 		if strings.EqualFold(part, "bin") {
 			return true
 		}

@@ -108,8 +108,7 @@ func reportError(w io.Writer, err error) int {
 	if errors.Is(err, selector.ErrCancelled) {
 		return exitCancelled
 	}
-	var rateLimitErr *github.RateLimitError
-	if errors.As(err, &rateLimitErr) {
+	if rateLimitErr, ok := errors.AsType[*github.RateLimitError](err); ok {
 		err = rateLimitErr
 	}
 	// The process exits next either way, so a failed write is not reported.
