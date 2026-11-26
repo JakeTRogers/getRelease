@@ -200,6 +200,23 @@ export GETRELEASE_COOLDOWN=5
 getRelease config set trustedOwners 'JakeTRogers'
 ```
 
+Each `trustedOwners` entry names an owner on a specific host:
+
+- `owner` trusts that owner on `github.com` only. It does **not** cover an owner with the same name on a `*.ghe.com` host.
+- `host/owner` trusts that owner on that host, for example `acme.ghe.com/acme`. `github.com/JakeTRogers` is equivalent to `JakeTRogers`.
+
+```yaml
+trustedOwners:
+  - JakeTRogers         # JakeTRogers on github.com
+  - acme.ghe.com/acme   # acme on the acme.ghe.com tenant
+```
+
+```bash
+getRelease config set trustedOwners '["JakeTRogers","acme.ghe.com/acme"]'
+```
+
+Malformed entries (such as `a/b/c`, `/owner`, `host/`, or an unsupported host) are ignored with a warning. When the cooldown blocks a release, the error names the exact entry that would exempt its owner.
+
 ## Authentication
 
 API requests are anonymous by default, which is subject to GitHub's 60 requests/hour per-IP rate limit. To authenticate (5,000 requests/hour, plus access to private-repo releases), getRelease uses the first token it finds:

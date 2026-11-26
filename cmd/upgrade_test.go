@@ -149,7 +149,7 @@ func TestResolveUpgradeReleaseUnpinnedDoesNotDowngrade(t *testing.T) {
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 
-			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor("cli"))
+			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(hostOwner{owner: "cli"}))
 			if err != nil {
 				t.Fatalf("resolveUpgradeRelease() error: %v", err)
 			}
@@ -679,7 +679,7 @@ func TestResolveUpgradeReleasePatchPinWithNonSemverTagIsUnchanged(t *testing.T) 
 	var out strings.Builder
 	cmd.SetOut(&out)
 
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(""))
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(hostOwner{}))
 	if err != nil {
 		t.Fatalf("resolveUpgradeRelease() error: %v", err)
 	}
@@ -731,7 +731,7 @@ func TestResolveUpgradeReleaseNonSemverPinnedVersionFailsForMinorAndMajorPins(t 
 			var out strings.Builder
 			cmd.SetOut(&out)
 
-			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(""))
+			release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, disabledCooldown().policyFor(hostOwner{}))
 			if err == nil {
 				t.Fatal("resolveUpgradeRelease() error = nil, want parse error")
 			}

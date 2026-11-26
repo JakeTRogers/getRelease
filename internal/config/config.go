@@ -47,8 +47,10 @@ type AppConfig struct {
 	// eligible for install, guarding against freshly published malicious
 	// releases. 0 disables the cooldown.
 	Cooldown int `mapstructure:"cooldown" yaml:"cooldown"`
-	// TrustedOwners lists GitHub owners (case-insensitive) whose releases are
-	// exempt from Cooldown.
+	// TrustedOwners lists owners whose releases are exempt from Cooldown.
+	// Each entry is "owner" (an owner on github.com) or "host/owner" (an
+	// owner on that host, such as "acme.ghe.com/acme"). Hosts and owners
+	// match case-insensitively; malformed entries are ignored with a warning.
 	TrustedOwners []string `mapstructure:"trustedOwners" yaml:"trustedOwners"`
 	// AssetPreferences controls asset filtering and ranking.
 	AssetPreferences AssetPreferences `mapstructure:"assetPreferences" yaml:"assetPreferences"`

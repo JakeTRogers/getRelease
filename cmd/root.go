@@ -391,7 +391,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	policy := resolveCooldownSettings(cmd, cfg).policyFor(owner)
+	policy := resolveCooldownSettings(cmd, cfg).policyFor(hostOwner{host: host, owner: owner})
 	var rel *github.Release
 	if tag != "" {
 		rel, err = client.GetReleaseByTag(owner, repo, tag)

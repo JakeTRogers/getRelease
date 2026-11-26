@@ -290,7 +290,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	owner := rec.Owner
 	repo := rec.Repo
-	policy := cds.policyFor(owner)
+	policy := cds.policyFor(hostOwner{host: rec.Host, owner: owner})
 
 	// Target the host the package was originally installed from (empty
 	// means github.com).

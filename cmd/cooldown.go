@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,18 +19,65 @@ import (
 type cooldownSettings struct {
 	days          int    // effective minimum release age in days; 0 = disabled
 	source        string // "flag" or "config"
-	trustedOwners []string
+	trustedOwners []hostOwner
 	now           func() time.Time
+}
+
+// hostOwner is a GitHub owner on a specific Host. An empty host means
+// github.com.
+type hostOwner struct {
+	host  string
+	owner string
+}
+
+// parseTrustedOwner parses a trustedOwners entry of the form "owner" (meaning
+// github.com) or "host/owner". The returned host is normalized.
+func parseTrustedOwner(entry string) (hostOwner, error) {
+	host, owner := "", entry
+	if before, after, found := strings.Cut(entry, "/"); found {
+		if strings.Contains(after, "/") {
+			return hostOwner{}, errors.New("want owner or host/owner")
+		}
+		if strings.TrimSpace(before) == "" {
+			return hostOwner{}, errors.New("empty host")
+		}
+		host, owner = before, after
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return hostOwner{}, errors.New("empty owner")
+	}
+	normalized, err := github.NormalizeHost(host)
+	if err != nil {
+		return hostOwner{}, err
+	}
+	return hostOwner{host: normalized, owner: owner}, nil
+}
+
+// configEntry returns o in trustedOwners config entry form: the bare owner
+// for github.com, host/owner for any other Host.
+func (o hostOwner) configEntry() string {
+	if o.host == "" || o.host == github.DefaultHost {
+		return o.owner
+	}
+	return o.host + "/" + o.owner
 }
 
 // resolveCooldownSettings applies precedence: an explicitly set --cooldown
 // flag wins over the config/env value. Negative values are clamped to 0.
 func resolveCooldownSettings(cmd *cobra.Command, cfg *config.AppConfig) cooldownSettings {
 	settings := cooldownSettings{
-		days:          cfg.Cooldown,
-		source:        "config",
-		trustedOwners: cfg.TrustedOwners,
-		now:           time.Now,
+		days:   cfg.Cooldown,
+		source: "config",
+		now:    time.Now,
+	}
+	for _, entry := range cfg.TrustedOwners {
+		trusted, err := parseTrustedOwner(entry)
+		if err != nil {
+			slog.Warn("ignoring invalid trustedOwners entry", "entry", entry, "err", err)
+			continue
+		}
+		settings.trustedOwners = append(settings.trustedOwners, trusted)
 	}
 	if flag := cmd.Flags().Lookup("cooldown"); flag != nil && flag.Changed {
 		if days, err := cmd.Flags().GetInt("cooldown"); err == nil {
@@ -47,19 +96,35 @@ func resolveCooldownSettings(cmd *cobra.Command, cfg *config.AppConfig) cooldown
 type cooldownPolicy struct {
 	days   int
 	reason string
-	now    func() time.Time
+	// trustedOwnersEntry is the trustedOwners config entry that would
+	// exempt the repo owner, or empty when unknown.
+	trustedOwnersEntry string
+	now                func() time.Time
 }
 
-// policyFor returns the policy to enforce for a repo owned by owner,
-// disabling the cooldown when the owner is trusted.
-func (s cooldownSettings) policyFor(owner string) cooldownPolicy {
+// policyFor returns the policy to enforce for a repo owned by repo.owner on
+// repo.host, disabling the cooldown when that owner is trusted on that Host.
+func (s cooldownSettings) policyFor(repo hostOwner) cooldownPolicy {
+	host, err := github.NormalizeHost(repo.host)
+	if err != nil {
+		// Failing closed is safe: enforcing the cooldown can only delay an
+		// install, never exempt an owner whose Host cannot be verified.
+		slog.Warn("cannot verify host for trusted owner check; enforcing cooldown", "host", repo.host, "owner", repo.owner, "err", err)
+		return cooldownPolicy{days: s.days, reason: s.source, now: s.now}
+	}
+	repo.host = host
 	for _, trusted := range s.trustedOwners {
-		if strings.EqualFold(owner, trusted) {
-			slog.Debug("cooldown skipped for trusted owner", "owner", owner)
-			return cooldownPolicy{days: 0, reason: "trusted owner " + trusted, now: s.now}
+		if trusted.host == repo.host && strings.EqualFold(repo.owner, trusted.owner) {
+			slog.Debug("cooldown skipped for trusted owner", "host", repo.host, "owner", repo.owner)
+			return cooldownPolicy{days: 0, reason: "trusted owner " + trusted.configEntry(), now: s.now}
 		}
 	}
-	return cooldownPolicy{days: s.days, reason: s.source, now: s.now}
+	return cooldownPolicy{
+		days:               s.days,
+		reason:             s.source,
+		trustedOwnersEntry: repo.configEntry(),
+		now:                s.now,
+	}
 }
 
 func (p cooldownPolicy) enabled() bool {
@@ -98,7 +163,11 @@ func (p cooldownPolicy) checkRelease(rel *github.Release) error {
 	if rel.PublishedAt.IsZero() {
 		return fmt.Errorf("release %s has no published date; cannot verify the %d-day cooldown (use --cooldown 0 to override)", rel.TagName, p.days)
 	}
-	return fmt.Errorf("release %s is %d day(s) old; cooldown is %d days (use --cooldown 0 to override, or add the owner to trustedOwners)", rel.TagName, p.ageDays(rel.PublishedAt), p.days)
+	trustHint := "the owner"
+	if p.trustedOwnersEntry != "" {
+		trustHint = strconv.Quote(p.trustedOwnersEntry)
+	}
+	return fmt.Errorf("release %s is %d day(s) old; cooldown is %d days (use --cooldown 0 to override, or add %s to trustedOwners)", rel.TagName, p.ageDays(rel.PublishedAt), p.days, trustHint)
 }
 
 // checkAsset guards against assets re-uploaded onto an already-eligible

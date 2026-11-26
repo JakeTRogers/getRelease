@@ -44,7 +44,7 @@ var configKeys = []struct {
 	{value: "keepDownloads", description: "keep downloaded assets after a successful install or upgrade"},
 	{value: "token", description: "GitHub API token (prefer GETRELEASE_TOKEN/GH_TOKEN/GITHUB_TOKEN env vars over storing here)"},
 	{value: "cooldown", description: "minimum release age in days before install (0 disables)"},
-	{value: "trustedOwners", description: "GitHub owners exempt from cooldown (case-insensitive)"},
+	{value: "trustedOwners", description: "owners exempt from cooldown: owner (github.com only) or host/owner (case-insensitive)"},
 	{value: "assetPreferences.os", description: "override detected OS for asset matching"},
 	{value: "assetPreferences.arch", description: "override detected architecture for asset matching"},
 	{value: "assetPreferences.formats", description: "preferred archive formats in priority order"},
