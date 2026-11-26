@@ -18,6 +18,7 @@ getRelease is a Go CLI for downloading GitHub release assets, extracting archive
 - Track install history for upgrades, version pinning, shell completion, and cleanup workflows.
 - Upgrade one installed package or every installed package still present on disk.
 - Manage config and history from built-in `config` and `history` subcommands.
+- Move every tracked install to a new install directory with `relocate`.
 - Emit machine-readable JSON from the main install flow and list/history/config commands.
 - Enforce a release cooldown by default to harden against supply-chain attacks, with per-run and per-owner overrides.
 
@@ -128,6 +129,22 @@ Prune history records for binaries that are no longer installed:
 ```bash
 getRelease history prune
 ```
+
+Changing `installDir` only affects future installs; binaries already installed stay where history records them, and `upgrade` writes each one back there using the current `installCommand`. To move everything to a new install directory, for example after switching from `/usr/local/bin` and a `sudo install` command to `~/.local/bin` and a sudo-free one, set the new `installCommand` and then relocate:
+
+```bash
+getRelease config set installCommand ""
+getRelease relocate ~/.local/bin --dry-run
+getRelease relocate ~/.local/bin
+```
+
+`relocate` creates the directory if needed and copies each recorded binary from its current location into it with the configured `installCommand`. It then updates the binary's history record, removes the old copy, and finally sets `installDir`. When several packages installed the same name and share one file, the file is moved once and every record that points at it is updated. Nothing is downloaded. It reports what it did per binary, as JSON with `--format json`, and shows the plan without changing anything with `--dry-run`.
+
+- Binaries that are missing from disk are skipped and left in history; `history prune` removes those records. A binary that cannot be checked, for example because its directory is unreadable, counts as a failure instead.
+- A binary is skipped, with a non-zero exit, when a different file already exists at its new path. It is never overwritten. It is also skipped when its recorded name is not a plain file name, such as `../tool`, so nothing is placed outside the new directory.
+- If an old copy cannot be removed, for example because it is in a directory that needs elevated rights, it stays, the record already points at the new copy, and the command prints the `sudo rm` command to run. The exit status is non-zero.
+- With an `installCommand` that symlinks instead of copying, a binary that is itself a link is relinked to the file it points at, such as a kept download. A binary that is a regular file cannot be relocated that way, since the new link would point at the old copy about to be removed: the new link is removed, the old copy and its record are left as they are, and the binary counts as failed.
+- `installDir` is only changed when no binary was skipped for a conflict or an invalid name, or failed, so rerunning `relocate` after fixing the problem finishes the job.
 
 Show the effective configuration:
 

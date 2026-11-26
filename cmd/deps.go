@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/JakeTRogers/getRelease/internal/github"
 	"github.com/JakeTRogers/getRelease/internal/install"
@@ -54,3 +55,6 @@ func confirmDestructive(prompt string, force bool) (bool, error) {
 }
 
 var newBinaryInstaller = install.NewInstaller
+
+// removeFile deletes a file left behind by a relocation.
+var removeFile = os.Remove

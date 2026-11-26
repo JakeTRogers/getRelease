@@ -195,6 +195,24 @@ func sameRepo(rec Record, owner, repo string) bool {
 	return strings.EqualFold(rec.Owner, owner) && strings.EqualFold(rec.Repo, repo)
 }
 
+// SetInstallPath points the binary of record id that is recorded at oldPath to
+// newPath. Unlike Add it leaves UpdatedAt alone, since the release is
+// unchanged. It returns true if a binary was updated.
+func (s *Store) SetInstallPath(id, oldPath, newPath string) bool {
+	for i := range s.records {
+		if s.records[i].ID != id {
+			continue
+		}
+		for j := range s.records[i].Binaries {
+			if s.records[i].Binaries[j].InstallPath == oldPath {
+				s.records[i].Binaries[j].InstallPath = newPath
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Prune removes records where all binaries' InstallPaths do not exist on disk.
 // It returns the removed records.
 func (s *Store) Prune() ([]Record, error) {

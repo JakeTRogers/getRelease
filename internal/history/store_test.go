@@ -350,3 +350,39 @@ func TestStore_LoadMalformedRecord(t *testing.T) {
 		t.Fatalf("unexpected owner: %s", rs[0].Owner)
 	}
 }
+
+func TestStore_SetInstallPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		id       string
+		oldPath  string
+		wantOK   bool
+		wantPath string
+	}{
+		{name: "matching binary", id: "a1", oldPath: "/old/tool", wantOK: true, wantPath: "/new/tool"},
+		{name: "unknown record", id: "zz", oldPath: "/old/tool", wantOK: false, wantPath: "/old/tool"},
+		{name: "unknown path", id: "a1", oldPath: "/elsewhere/tool", wantOK: false, wantPath: "/old/tool"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+			if err := s.Add(Record{ID: "a1", Owner: "alice", Repo: "proj", Binaries: []Binary{{Name: "tool", InstalledAs: "tool", InstallPath: "/old/tool"}}}); err != nil {
+				t.Fatal(err)
+			}
+			before := s.Records()[0].UpdatedAt
+
+			if got := s.SetInstallPath(tt.id, tt.oldPath, "/new/tool"); got != tt.wantOK {
+				t.Fatalf("SetInstallPath = %v; want %v", got, tt.wantOK)
+			}
+			rec := s.Records()[0]
+			if got := rec.Binaries[0].InstallPath; got != tt.wantPath {
+				t.Fatalf("InstallPath = %q; want %q", got, tt.wantPath)
+			}
+			if !rec.UpdatedAt.Equal(before) {
+				t.Fatalf("UpdatedAt changed from %v to %v", before, rec.UpdatedAt)
+			}
+		})
+	}
+}
