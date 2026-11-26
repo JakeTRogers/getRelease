@@ -63,5 +63,5 @@ How far upgrades of a Package may move from its current Release: `patch` (no mov
 _Avoid_: Pin policy, semver ceiling, version lock
 
 **Target**:
-What the user types to choose an existing Package on the command line: a binary name or owner/repo.
+What the user types to choose an existing Package on the command line: a binary name, owner/repo, or host/owner/repo. A bare owner/repo that matches Packages on more than one Host is ambiguous and is rejected.
 _Avoid_: Package (when meaning the selector rather than the thing selected)

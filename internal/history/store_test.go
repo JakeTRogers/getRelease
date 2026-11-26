@@ -76,7 +76,7 @@ func TestStore_Add_Deduplication(t *testing.T) {
 	if err := s.Add(r1); err != nil {
 		t.Fatalf("Add r1: %v", err)
 	}
-	r2 := Record{Owner: "o", Repo: "r", Host: "acme.ghe.com", Tag: "v2", PinLevel: PinMinor, Binaries: []Binary{{Name: "b2"}}}
+	r2 := Record{Owner: "o", Repo: "r", Tag: "v2", PinLevel: PinMinor, Binaries: []Binary{{Name: "b2"}}}
 	if err := s.Add(r2); err != nil {
 		t.Fatalf("Add r2: %v", err)
 	}
@@ -90,8 +90,55 @@ func TestStore_Add_Deduplication(t *testing.T) {
 	if rs[0].PinLevel != PinMinor {
 		t.Fatalf("expected PinLevel updated to %q, got %q", PinMinor, rs[0].PinLevel)
 	}
-	if rs[0].Host != "acme.ghe.com" {
-		t.Fatalf("expected Host updated to acme.ghe.com, got %q", rs[0].Host)
+}
+
+func TestStore_Add_SameRepoOnDifferentHostsCoexist(t *testing.T) {
+	t.Parallel()
+	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+
+	if err := s.Add(Record{Owner: "acme", Repo: "tool", Tag: "v1", PinLevel: PinPatch, Binaries: []Binary{{Name: "tool", InstallPath: "/gh/tool"}}}); err != nil {
+		t.Fatalf("Add github.com record: %v", err)
+	}
+	if err := s.Add(Record{Owner: "acme", Repo: "tool", Host: "acme.ghe.com", Tag: "v2", Binaries: []Binary{{Name: "tool", InstallPath: "/ghe/tool"}}}); err != nil {
+		t.Fatalf("Add GHE record: %v", err)
+	}
+
+	rs := s.Records()
+	if len(rs) != 2 {
+		t.Fatalf("records = %d, want 2: %+v", len(rs), rs)
+	}
+	if rs[0].Host != "" || rs[0].Tag != "v1" || rs[0].PinLevel != PinPatch || rs[0].Binaries[0].InstallPath != "/gh/tool" {
+		t.Fatalf("github.com record was changed: %+v", rs[0])
+	}
+	if rs[1].Host != "acme.ghe.com" || rs[1].Tag != "v2" || rs[1].Binaries[0].InstallPath != "/ghe/tool" {
+		t.Fatalf("GHE record = %+v", rs[1])
+	}
+}
+
+func TestStore_Add_UpdatesSameHostIgnoringCase(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		first, again string
+	}{
+		{"empty host and github.com are the same", "", "github.com"},
+		{"host case is ignored", "Acme.GHE.com", "acme.ghe.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+			if err := s.Add(Record{Owner: "acme", Repo: "tool", Host: tt.first, Tag: "v1"}); err != nil {
+				t.Fatalf("Add first: %v", err)
+			}
+			if err := s.Add(Record{Owner: "Acme", Repo: "Tool", Host: tt.again, Tag: "v2"}); err != nil {
+				t.Fatalf("Add again: %v", err)
+			}
+			rs := s.Records()
+			if len(rs) != 1 || rs[0].Tag != "v2" {
+				t.Fatalf("records = %+v, want one record at v2", rs)
+			}
+		})
 	}
 }
 
@@ -256,12 +303,73 @@ func TestStore_FindByRepo(t *testing.T) {
 		t.Fatalf("Add second repo record: %v", err)
 	}
 
-	got := s.FindByRepo("o2", "r2")
+	got := s.FindByRepo("", "o2", "r2")
 	if got == nil {
 		t.Fatalf("expected to find record for o2/r2")
 	}
 	if got.Owner != "o2" || got.Repo != "r2" {
 		t.Fatalf("found unexpected record: %+v", got)
+	}
+}
+
+func TestStore_FindByRepo_MatchesHost(t *testing.T) {
+	t.Parallel()
+	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+	for _, host := range []string{"", "acme.ghe.com"} {
+		if err := s.Add(Record{Owner: "acme", Repo: "tool", Host: host, Tag: "host-" + host}); err != nil {
+			t.Fatalf("Add %q: %v", host, err)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		host    string
+		wantTag string
+	}{
+		{"empty host is github.com", "", "host-"},
+		{"explicit github.com", "github.com", "host-"},
+		{"ghe host", "acme.ghe.com", "host-acme.ghe.com"},
+		{"ghe host ignores case", "ACME.ghe.com", "host-acme.ghe.com"},
+		{"unknown host", "other.ghe.com", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := s.FindByRepo(tt.host, "acme", "tool")
+			if tt.wantTag == "" {
+				if got != nil {
+					t.Fatalf("FindByRepo = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil || got.Tag != tt.wantTag {
+				t.Fatalf("FindByRepo = %+v, want tag %q", got, tt.wantTag)
+			}
+		})
+	}
+}
+
+func TestStore_FindAllByRepo(t *testing.T) {
+	t.Parallel()
+	s := NewStore(filepath.Join(t.TempDir(), "history.json"))
+	for _, r := range []Record{
+		{Owner: "acme", Repo: "tool"},
+		{Owner: "Acme", Repo: "Tool", Host: "acme.ghe.com"},
+		{Owner: "acme", Repo: "other"},
+	} {
+		if err := s.Add(r); err != nil {
+			t.Fatalf("Add %+v: %v", r, err)
+		}
+	}
+
+	if got := s.FindAllByRepo("ACME", "tool"); len(got) != 2 {
+		t.Fatalf("FindAllByRepo(acme/tool) = %+v, want both Hosts", got)
+	}
+	if got := s.FindAllByRepo("acme", "other"); len(got) != 1 {
+		t.Fatalf("FindAllByRepo(acme/other) = %+v, want 1", got)
+	}
+	if got := s.FindAllByRepo("acme", "missing"); len(got) != 0 {
+		t.Fatalf("FindAllByRepo(acme/missing) = %+v, want none", got)
 	}
 }
 
@@ -272,7 +380,7 @@ func TestStore_RepoMatchingIgnoresCase(t *testing.T) {
 		t.Fatalf("Add initial record: %v", err)
 	}
 
-	if got := s.FindByRepo("junegunn", "fzf"); got == nil {
+	if got := s.FindByRepo("", "junegunn", "fzf"); got == nil {
 		t.Fatal("FindByRepo(junegunn, fzf) = nil, want the JuneGunn/FZF record")
 	}
 

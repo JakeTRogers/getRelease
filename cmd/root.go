@@ -267,34 +267,56 @@ func resolveRepo(cmd *cobra.Command, args []string) (owner, repo, host, tag stri
 		return ownerFlag, repoFlag, host, tag, nil
 	}
 
-	return ownerFlag, repoFlag, historyHostFor(ownerFlag, repoFlag), tag, nil
+	host, err = historyHostFor(ownerFlag, repoFlag)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return ownerFlag, repoFlag, host, tag, nil
 }
 
 // historyHostFor returns the GitHub host recorded for owner/repo in install
 // history, defaulting to github.com when the repository has no record. This
 // is the only automatic host source: a package installed from a *.ghe.com
-// host keeps targeting that host without needing --host again.
-func historyHostFor(owner, repo string) string {
+// host keeps targeting that host without needing --host again. It fails when
+// the repository is recorded on more than one host, rather than picking one.
+func historyHostFor(owner, repo string) (string, error) {
 	histPath, err := config.HistoryFilePath()
 	if err != nil {
-		return github.DefaultHost
+		return github.DefaultHost, nil
 	}
 	store := history.NewStore(histPath)
 	if err := store.Load(); err != nil {
 		slog.Debug("skipping history host lookup", "err", err)
-		return github.DefaultHost
+		return github.DefaultHost, nil
 	}
-	rec := store.FindByRepo(owner, repo)
-	if rec == nil || rec.Host == "" {
-		return github.DefaultHost
+	recs := store.FindAllByRepo(owner, repo)
+	if len(recs) == 0 {
+		return github.DefaultHost, nil
+	}
+	if len(recs) > 1 {
+		return "", ambiguousPackageError(recs, "pass host/owner/repo or --host to choose one")
+	}
+	rec := recs[0]
+	if rec.Host == "" {
+		return github.DefaultHost, nil
 	}
 	host, err := github.NormalizeHost(rec.Host)
 	if err != nil {
 		slog.Warn("ignoring invalid host in history record", "owner", owner, "repo", repo, "host", rec.Host, "err", err)
-		return github.DefaultHost
+		return github.DefaultHost, nil
 	}
 	slog.Debug("using GitHub host from install history", "owner", owner, "repo", repo, "host", host)
-	return host
+	return host, nil
+}
+
+// ambiguousPackageError reports that owner/repo is recorded on several hosts,
+// listing them, followed by how to choose one. recs must be non-empty.
+func ambiguousPackageError(recs []history.Record, hint string) error {
+	hosts := make([]string, len(recs))
+	for i, rec := range recs {
+		hosts[i] = rec.EffectiveHost()
+	}
+	return fmt.Errorf("%s/%s is installed from several hosts (%s); %s", recs[0].Owner, recs[0].Repo, strings.Join(hosts, ", "), hint)
 }
 
 // canonicalRepoName returns GitHub's spelling of owner/repo, taken from the
@@ -622,7 +644,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err := store.Load(); err != nil {
 		return fmt.Errorf("loading history: %w", err)
 	}
-	existing := store.FindByRepo(owner, repo)
+	existing := store.FindByRepo(host, owner, repo)
 
 	rec := history.Record{
 		Owner: owner,

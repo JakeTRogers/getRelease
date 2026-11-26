@@ -47,6 +47,39 @@ func TestCompleteReposFromRecords(t *testing.T) {
 	}
 }
 
+func TestCompleteUpgradeTargetsFromRecordsSameRepoOnSeveralHosts(t *testing.T) {
+	t.Parallel()
+
+	records := []history.Record{
+		{Owner: "acme", Repo: "tool", Binaries: []history.Binary{{Name: "tool", InstalledAs: "tool"}}},
+		{Owner: "acme", Repo: "tool", Host: "acme.ghe.com", Binaries: []history.Binary{{Name: "tool-ghe", InstalledAs: "tool-ghe"}}},
+		{Owner: "acme", Repo: "solo", Host: "acme.ghe.com", Binaries: []history.Binary{{Name: "solo", InstalledAs: "solo"}}},
+	}
+
+	got := completeUpgradeTargetsFromRecords(records, records, "")
+	want := []string{
+		"acme.ghe.com/acme/tool\ttool-ghe",
+		"acme/solo\tsolo",
+		"github.com/acme/tool\ttool",
+	}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeUpgradeTargetsFromRecords() = %v, want host-qualified targets only for the ambiguous owner/repo", got)
+	}
+}
+
+func TestCompleteUpgradeTargetsFromRecordsUsesAllRecordsForAmbiguity(t *testing.T) {
+	t.Parallel()
+
+	public := history.Record{Owner: "acme", Repo: "tool", Binaries: []history.Binary{{Name: "tool", InstalledAs: "tool"}}}
+	ghe := history.Record{Owner: "acme", Repo: "tool", Host: "acme.ghe.com", Binaries: []history.Binary{{Name: "tool", InstalledAs: "tool"}}}
+
+	got := completeUpgradeTargetsFromRecords([]history.Record{ghe}, []history.Record{public, ghe}, "")
+	want := []string{"acme.ghe.com/acme/tool\ttool"}
+	if !reflect.DeepEqual([]string(got), want) {
+		t.Fatalf("completeUpgradeTargetsFromRecords() = %v, want %v: the bare owner/repo would be ambiguous", got, want)
+	}
+}
+
 func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 	t.Parallel()
 
@@ -68,7 +101,7 @@ func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 		},
 	}
 
-	got := completeUpgradeTargetsFromRecords(records, "")
+	got := completeUpgradeTargetsFromRecords(records, records, "")
 	want := []string{
 		"alpha\t2 installs",
 		"cli/alpha\talpha, helper",
@@ -78,7 +111,7 @@ func TestCompleteUpgradeTargetsFromRecords(t *testing.T) {
 		t.Fatalf("completeUpgradeTargetsFromRecords() = %v, want %v", got, want)
 	}
 
-	got = completeUpgradeTargetsFromRecords(records, "ops/")
+	got = completeUpgradeTargetsFromRecords(records, records, "ops/")
 	want = []string{"ops/alpha\talpha"}
 	if !reflect.DeepEqual([]string(got), want) {
 		t.Fatalf("completeUpgradeTargetsFromRecords() owner/repo = %v, want %v", got, want)

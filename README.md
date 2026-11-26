@@ -229,7 +229,7 @@ getRelease acme/tool --host acme.ghe.com
 getRelease --owner acme --repo tool --host acme.ghe.com
 ```
 
-The host a package was installed from is recorded in install history, so `getRelease upgrade`, and later `owner/repo` or `--owner`/`--repo` invocations for that same package, target the right host automatically without repeating `--host`.
+The host a package was installed from is recorded in install history, so `getRelease upgrade`, and later `owner/repo` or `--owner`/`--repo` invocations for that same package, target the right host automatically without repeating `--host`. History keeps the same `owner/repo` from different hosts as separate packages. If a bare `owner/repo` matches more than one, the command fails instead of choosing: pass `host/owner/repo` (or `--host` when installing).
 
 getRelease derives the REST API endpoint (`https://api.acme.ghe.com`) and web URLs from the host, and passes `--hostname` to `gh auth token` so the right stored credentials are used. Self-hosted GitHub Enterprise Server (with a customer-owned domain and `/api/v3` path) is not supported.
 

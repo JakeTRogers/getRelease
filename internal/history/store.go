@@ -105,10 +105,10 @@ func (s *Store) Save() error {
 	return nil
 }
 
-// Add inserts or updates a record in the store. If a record with the same
-// owner+repo exists, compared case-insensitively as GitHub does, it will be
-// updated (owner and repo spelling, host, tag, pin level, asset, binaries,
-// updatedAt). New records will receive an ID if empty and InstalledAt will be
+// Add inserts or updates a record in the store. If a record for the same
+// Package exists (same host and owner+repo, compared case-insensitively as
+// GitHub does), it will be updated (owner and repo spelling, host spelling,
+// tag, pin level, asset, binaries, updatedAt). New records will receive an ID if empty and InstalledAt will be
 // set if zero.
 func (s *Store) Add(r Record) error {
 	if !isValidPinLevel(r.PinLevel) {
@@ -125,7 +125,7 @@ func (s *Store) Add(r Record) error {
 	r.UpdatedAt = now
 
 	for i := range s.records {
-		if sameRepo(s.records[i], r.Owner, r.Repo) {
+		if samePackage(s.records[i], r.Host, r.Owner, r.Repo) {
 			// update existing
 			s.records[i].Owner = r.Owner
 			s.records[i].Repo = r.Repo
@@ -177,16 +177,35 @@ func (s *Store) FindByBinary(name string) []Record {
 	return out
 }
 
-// FindByRepo returns the record matching owner+repo, compared
-// case-insensitively as GitHub does, or nil if not found.
-func (s *Store) FindByRepo(owner, repo string) *Record {
+// FindByRepo returns the record for owner+repo on host, compared
+// case-insensitively as GitHub does, or nil if not found. An empty host means
+// github.com.
+func (s *Store) FindByRepo(host, owner, repo string) *Record {
 	for _, rec := range s.records {
-		if sameRepo(rec, owner, repo) {
+		if samePackage(rec, host, owner, repo) {
 			r := rec
 			return &r
 		}
 	}
 	return nil
+}
+
+// FindAllByRepo returns the records for owner+repo on every host. More than
+// one record means the bare owner/repo is ambiguous.
+func (s *Store) FindAllByRepo(owner, repo string) []Record {
+	var out []Record
+	for _, rec := range s.records {
+		if sameRepo(rec, owner, repo) {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// samePackage reports whether rec tracks owner/repo on host. An empty host
+// means github.com.
+func samePackage(rec Record, host, owner, repo string) bool {
+	return strings.EqualFold(rec.EffectiveHost(), Record{Host: host}.EffectiveHost()) && sameRepo(rec, owner, repo)
 }
 
 // sameRepo reports whether rec tracks owner/repo. GitHub owner and

@@ -177,6 +177,85 @@ func TestResolveUpgradeRecordPaths(t *testing.T) {
 	}
 }
 
+func TestResolveUpgradeRecordBinaryPromptNamesHost(t *testing.T) {
+	useTestCommandDeps(t, nil)
+	var items []string
+	selectItems = func(got []string, _ string) (int, error) {
+		items = got
+		return 1, nil
+	}
+
+	store := history.NewStore(filepath.Join(t.TempDir(), "history.json"))
+	public := newHistoryRecord("pub", "acme", "tool", "v1.0.0", "tool", "tool", "/bin/tool")
+	ghe := newHistoryRecord("ghe", "acme", "tool", "v2.0.0", "tool", "tool", "/ghe/bin/tool")
+	ghe.Host = "acme.ghe.com"
+	for _, rec := range []history.Record{public, ghe} {
+		if err := store.Add(rec); err != nil {
+			t.Fatalf("add record: %v", err)
+		}
+	}
+
+	rec, err := resolveUpgradeRecord(store, "tool", "", "")
+	if err != nil || rec.ID != "ghe" {
+		t.Fatalf("resolveUpgradeRecord() = %+v, %v; want the selected GHE record", rec, err)
+	}
+	if len(items) != 2 || strings.Contains(items[0], "github.com") || !strings.Contains(items[1], "acme.ghe.com") {
+		t.Fatalf("prompt items = %q, want the GHE entry to name its host", items)
+	}
+}
+
+func TestResolveUpgradeRecordSameRepoOnSeveralHosts(t *testing.T) {
+	useTestCommandDeps(t, nil)
+	selectItems = func(_ []string, _ string) (int, error) {
+		t.Fatal("selectItems called; an ambiguous owner/repo must fail, not prompt")
+		return 0, nil
+	}
+
+	store := history.NewStore(filepath.Join(t.TempDir(), "history.json"))
+	public := newHistoryRecord("pub", "acme", "tool", "v1.0.0", "tool", "tool", "/bin/tool")
+	ghe := newHistoryRecord("ghe", "acme", "tool", "v2.0.0", "tool", "tool", "/ghe/bin/tool")
+	ghe.Host = "acme.ghe.com"
+	for _, rec := range []history.Record{public, ghe} {
+		if err := store.Add(rec); err != nil {
+			t.Fatalf("add record: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name                string
+		target, owner, repo string
+		wantID              string
+		wantErr             []string
+	}{
+		{name: "bare target is ambiguous", target: "acme/tool", wantErr: []string{"acme/tool", "acme.ghe.com", "github.com", "host/owner/repo"}},
+		{name: "owner and repo flags are ambiguous", owner: "acme", repo: "tool", wantErr: []string{"acme/tool", "host/owner/repo"}},
+		{name: "github.com host target", target: "github.com/acme/tool", wantID: "pub"},
+		{name: "enterprise host target", target: "acme.ghe.com/acme/tool", wantID: "ghe"},
+		{name: "host target ignores case", target: "ACME.ghe.com/Acme/Tool", wantID: "ghe"},
+		{name: "unrecorded host target", target: "other.ghe.com/acme/tool", wantErr: []string{"no history found"}},
+		{name: "too many path segments", target: "a/b/c/d", wantErr: []string{"invalid target"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, err := resolveUpgradeRecord(store, tt.target, tt.owner, tt.repo)
+			if len(tt.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("resolveUpgradeRecord() = %+v, want error", rec)
+				}
+				for _, want := range tt.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want it to mention %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil || rec.ID != tt.wantID {
+				t.Fatalf("resolveUpgradeRecord() = %+v, %v; want record %q", rec, err, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestRunUpgradeAllDryRunSummary(t *testing.T) {
 	useTestCommandDeps(t, &fakeReleaseClient{
 		getLatestRelease: func(owner, repo string) (*github.Release, error) {

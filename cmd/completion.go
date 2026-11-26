@@ -44,11 +44,14 @@ func completeRepoArg(cmd *cobra.Command, args []string, toComplete string) ([]co
 	}
 
 	records := loadHistoryRecordsForCompletion(false)
-	return completeRepoRefsFromRecords(records, toComplete), cobra.ShellCompDirectiveNoFileComp
+	return completeRepoRefsFromRecords(records, records, toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
-func completeRepoRefsFromRecords(records []history.Record, toComplete string) []cobra.Completion {
-	descriptions := repoTargetDescriptions(records)
+// completeRepoRefsFromRecords suggests a target for each of records. all is
+// every record in history, which decides whether an owner/repo is ambiguous
+// even when records was narrowed to installed packages.
+func completeRepoRefsFromRecords(records, all []history.Record, toComplete string) []cobra.Completion {
+	descriptions := repoTargetDescriptions(records, all)
 	var completions []cobra.Completion
 	for _, target := range sortedKeys(descriptions) {
 		if !matchesCompletion(target, toComplete) {
@@ -59,14 +62,26 @@ func completeRepoRefsFromRecords(records []history.Record, toComplete string) []
 	return completions
 }
 
-// repoTargetDescriptions maps owner/repo for each record to the binaries it
-// installed.
-func repoTargetDescriptions(records []history.Record) map[string]string {
+// repoTargetDescriptions maps the target that selects each record to the
+// binaries it installed. That is owner/repo, or host/owner/repo when the same
+// owner/repo is installed from several hosts in all and the bare form would
+// be ambiguous.
+func repoTargetDescriptions(records, all []history.Record) map[string]string {
+	counts := make(map[string]int)
+	for _, rec := range all {
+		counts[strings.ToLower(rec.Owner+"/"+rec.Repo)]++
+	}
+
 	descriptions := make(map[string]string)
 	for _, rec := range records {
-		if rec.Owner != "" && rec.Repo != "" {
-			descriptions[rec.Owner+"/"+rec.Repo] = describeRecordBinaries(rec)
+		if rec.Owner == "" || rec.Repo == "" {
+			continue
 		}
+		target := rec.Owner + "/" + rec.Repo
+		if counts[strings.ToLower(target)] > 1 {
+			target = rec.EffectiveHost() + "/" + target
+		}
+		descriptions[target] = describeRecordBinaries(rec)
 	}
 	return descriptions
 }
@@ -83,8 +98,8 @@ func completeInstalledUpgradeTargets(cmd *cobra.Command, args []string, toComple
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	records := loadHistoryRecordsForCompletion(true)
-	return completeUpgradeTargetsFromRecords(records, toComplete), cobra.ShellCompDirectiveNoFileComp
+	all := loadHistoryRecordsForCompletion(false)
+	return completeUpgradeTargetsFromRecords(presentHistoryRecords(all), all, toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
 func loadHistoryRecordsForCompletion(presentOnly bool) []history.Record {
@@ -164,7 +179,7 @@ func completeReposFromRecords(records []history.Record, owner, toComplete string
 	return completions
 }
 
-func completeUpgradeTargetsFromRecords(records []history.Record, toComplete string) []cobra.Completion {
+func completeUpgradeTargetsFromRecords(records, all []history.Record, toComplete string) []cobra.Completion {
 	binaryMatches := make(map[string]int)
 	binaryDescriptions := make(map[string]string)
 
@@ -201,7 +216,7 @@ func completeUpgradeTargetsFromRecords(records []history.Record, toComplete stri
 		completions = append(completions, cobra.CompletionWithDesc(name, desc))
 	}
 
-	return append(completions, completeRepoRefsFromRecords(records, toComplete)...)
+	return append(completions, completeRepoRefsFromRecords(records, all, toComplete)...)
 }
 
 // completeHistoryRemoveTargets is history remove's ValidArgsFunction. It
