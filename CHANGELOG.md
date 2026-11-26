@@ -1,3 +1,9 @@
+## v1.6.2 (2026-11-25)
+
+### Fix
+
+- **deps**: bump github.com/spf13/pflag from 1.0.10 to 1.1.0
+
 ## v1.6.1 (2026-11-25)
 
 ### Fix
