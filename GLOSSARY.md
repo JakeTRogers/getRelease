@@ -50,6 +50,14 @@ _Avoid_: Executable, program, tool
 The name a Binary has once installed on disk. It equals the original name unless the user renamed it.
 _Avoid_: Alias, installed name, rename
 
+**Install directory**:
+The directory new Binaries are installed into. Changing it does not move Binaries already installed; History keeps each one at the path where it was installed until a Relocation.
+_Avoid_: Install path (that is where one Binary lives), target directory, bin dir
+
+**Relocation**:
+Moving every Binary recorded in History to a new Install directory, updating its recorded path and removing the old copy. The new Install directory becomes the configured one.
+_Avoid_: Migration, move, transfer
+
 **Pin level**:
 How far upgrades of a Package may move from its current Release: `patch` (no movement), `minor` (patch releases only), or `major` (minor and patch releases only).
 _Avoid_: Pin policy, semver ceiling, version lock
