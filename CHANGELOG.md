@@ -1,3 +1,14 @@
+## v1.7.0 (2026-11-26)
+
+### Feat
+
+- add relocate to move installs to a new directory
+
+### Fix
+
+- **cooldown**: scope trusted owners to their host
+- **history**: key Packages by Host plus owner/repo
+
 ## v1.6.2 (2026-11-25)
 
 ### Fix

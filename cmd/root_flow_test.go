@@ -193,6 +193,47 @@ func TestResolveRepoUsesHistoryHost(t *testing.T) {
 		}
 	})
 
+	t.Run("bare owner/repo recorded on several hosts is ambiguous", func(t *testing.T) {
+		both := newHistoryRecord("id-3", "cli", "dual", "v1.0.0", "dual", "dual", "/usr/local/bin/dual")
+		bothGHE := both
+		bothGHE.ID = "id-4"
+		bothGHE.Host = "acme.ghe.com"
+		writeHistoryRecords(t, []history.Record{ghe, public, both, bothGHE})
+
+		for name, cmd := range map[string]*cobra.Command{
+			"owner and repo flags": newCmd("cli", "dual", ""),
+			"argument":             newCmd("", "", ""),
+		} {
+			var args []string
+			if name == "argument" {
+				args = []string{"cli/dual"}
+			}
+			_, _, _, _, err := resolveRepo(cmd, args)
+			if err == nil {
+				t.Fatalf("%s: resolveRepo() error = nil, want an ambiguity error", name)
+			}
+			for _, want := range []string{"cli/dual", "acme.ghe.com", "host/owner/repo", "--host"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: resolveRepo() error = %q, want it to mention %q", name, err, want)
+				}
+			}
+		}
+
+		for name, c := range map[string]struct {
+			cmd  *cobra.Command
+			args []string
+			want string
+		}{
+			"host flag":     {newCmd("cli", "dual", "acme.ghe.com"), nil, "acme.ghe.com"},
+			"host argument": {newCmd("", "", ""), []string{"github.com/cli/dual"}, "github.com"},
+		} {
+			_, _, host, _, err := resolveRepo(c.cmd, c.args)
+			if err != nil || host != c.want {
+				t.Errorf("%s: resolveRepo() = host %q, err %v; want host %q", name, host, err, c.want)
+			}
+		}
+	})
+
 	t.Run("host flag overrides recorded host", func(t *testing.T) {
 		_, _, host, _, err := resolveRepo(newCmd("cli", "tool", "github.com"), nil)
 		if err != nil {
@@ -313,6 +354,57 @@ func TestRunRootRepositoryArgumentWithTag(t *testing.T) {
 	}
 	if got.Owner != "cli" || got.Repo != "tool" || got.RequestedTag != "v1.2.3" || got.ReleaseTag != "v1.2.3" {
 		t.Fatalf("runRoot() result = %+v, want cli/tool with requested and release tag v1.2.3", got)
+	}
+}
+
+func TestRunRootKeepsSameRepoOnOtherHostInHistory(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(baseDir, "xdg-data"))
+
+	client := &fakeReleaseClient{
+		getLatestRelease: func(owner, repo string) (*github.Release, error) {
+			return &github.Release{
+				TagName: "v2.0.0",
+				Assets:  []github.Asset{{Name: "tool_linux_amd64", DownloadURL: "https://example.invalid/tool_linux_amd64"}},
+			}, nil
+		},
+		downloadAsset: func(_ github.Asset, destPath string) (int64, error) {
+			return writeDownloadedBinary(t, destPath), nil
+		},
+	}
+	useTestCommandDeps(t, client)
+
+	installDir := filepath.Join(baseDir, "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatalf("create install dir: %v", err)
+	}
+	setTestConfig(filepath.Join(baseDir, "downloads"), installDir)
+
+	ghe := newHistoryRecord("ghe-1", "cli", "tool", "v1.0.0", "tool", "tool", "/ghe/bin/tool")
+	ghe.Host = "acme.ghe.com"
+	ghe.PinLevel = history.PinMinor
+	writeHistoryRecords(t, []history.Record{ghe})
+
+	cmd := &cobra.Command{}
+	addRootTestFlags(cmd)
+	if err := cmd.Flags().Set("host", "github.com"); err != nil {
+		t.Fatalf("set host: %v", err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runRoot(cmd, []string{"cli/tool"}); err != nil {
+		t.Fatalf("runRoot() error: %v", err)
+	}
+
+	records := loadHistoryRecords(t)
+	if len(records) != 2 {
+		t.Fatalf("history records = %d, want the GHE record kept and a github.com record added: %+v", len(records), records)
+	}
+	if records[0].Host != "acme.ghe.com" || records[0].Tag != "v1.0.0" || records[0].PinLevel != history.PinMinor {
+		t.Fatalf("GHE record = %+v, want it untouched", records[0])
+	}
+	if records[1].Host != "" || records[1].Tag != "v2.0.0" || records[1].PinLevel != history.PinNone {
+		t.Fatalf("github.com record = %+v, want a new unpinned record at v2.0.0", records[1])
 	}
 }
 

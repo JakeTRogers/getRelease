@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+// defaultHost is the host an empty Record.Host stands for.
+const defaultHost = "github.com"
+
+// EffectiveHost returns the host the Package comes from, with the empty
+// Host expanded to github.com.
+func (r Record) EffectiveHost() string {
+	if r.Host == "" {
+		return defaultHost
+	}
+	return r.Host
+}
+
 // PinLevel represents the version pinning policy for an installed target.
 type PinLevel string
 

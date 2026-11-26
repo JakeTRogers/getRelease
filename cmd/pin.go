@@ -16,7 +16,7 @@ var pinCmd = &cobra.Command{
 	Long: `Pin a previously installed target so future upgrades stay within the selected semver ceiling.
 The default level, patch, locks the target to its current exact release.
 
-The target is an installed binary name or owner/repo; --owner and --repo together select it instead.`,
+The target is an installed binary name or owner/repo; --owner and --repo together select it instead. When the same owner/repo is installed from several hosts, use a host/owner/repo target.`,
 	Args: validateTargetArgs,
 	RunE: runPin,
 }

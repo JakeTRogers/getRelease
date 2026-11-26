@@ -25,7 +25,7 @@ var upgradeCmd = &cobra.Command{
 	Short: "Upgrade a previously installed binary",
 	Long: `Upgrade a previously installed binary using install history, or use --all to upgrade every installed package still present on disk.
 
-The target is an installed binary name or owner/repo; --owner and --repo together select it instead.`,
+The target is an installed binary name or owner/repo; --owner and --repo together select it instead. When the same owner/repo is installed from several hosts, use a host/owner/repo target.`,
 	Args: validateUpgradeArgs,
 	RunE: runUpgrade,
 }
@@ -154,8 +154,8 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	for i := range records {
 		rec := records[i]
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s/%s\n", rec.Owner, rec.Repo); err != nil {
-			return fmt.Errorf("writing upgrade header for %s/%s: %w", rec.Owner, rec.Repo, err)
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "==> %s\n", packageLabel(rec)); err != nil {
+			return fmt.Errorf("writing upgrade header for %s: %w", packageLabel(rec), err)
 		}
 
 		upgraded, err := upgradeRecord(cmd, store, cfg, &rec, dryRun, cds)
@@ -166,9 +166,9 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 		}
 		if err != nil {
 			failed++
-			failures = append(failures, fmt.Sprintf("%s/%s: %v", rec.Owner, rec.Repo, err))
-			if _, writeErr := fmt.Fprintf(cmd.ErrOrStderr(), "Failed upgrading %s/%s: %v\n", rec.Owner, rec.Repo, err); writeErr != nil {
-				return fmt.Errorf("writing upgrade failure for %s/%s: %w", rec.Owner, rec.Repo, writeErr)
+			failures = append(failures, fmt.Sprintf("%s: %v", packageLabel(rec), err))
+			if _, writeErr := fmt.Fprintf(cmd.ErrOrStderr(), "Failed upgrading %s: %v\n", packageLabel(rec), err); writeErr != nil {
+				return fmt.Errorf("writing upgrade failure for %s: %w", packageLabel(rec), writeErr)
 			}
 			if _, writeErr := fmt.Fprintln(cmd.OutOrStdout()); writeErr != nil {
 				return fmt.Errorf("writing upgrade separator: %w", writeErr)
@@ -201,23 +201,38 @@ func runUpgradeAll(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 	return nil
 }
 
+// ambiguousTargetHint tells the user how to pick between Packages that share
+// an owner/repo on different hosts.
+const ambiguousTargetHint = "use a host/owner/repo target to choose one"
+
 func resolveUpgradeRecord(store *history.Store, target, ownerFlag, repoFlag string) (*history.Record, error) {
 	if ownerFlag != "" && repoFlag != "" {
-		if r := store.FindByRepo(ownerFlag, repoFlag); r != nil {
-			return r, nil
-		}
-		return nil, fmt.Errorf("no history found for %q; use 'getRelease history list' to see installed binaries", ownerFlag+"/"+repoFlag)
+		return findUniqueRecord(store, ownerFlag, repoFlag)
 	}
 
 	if strings.Contains(target, "/") {
-		parts := strings.SplitN(target, "/", 2)
-		if parts[0] == "" || parts[1] == "" {
+		parts := strings.Split(target, "/")
+		for _, part := range parts {
+			if part == "" {
+				return nil, fmt.Errorf("invalid target '%s'", target)
+			}
+		}
+		switch len(parts) {
+		case 2:
+			return findUniqueRecord(store, parts[0], parts[1])
+		case 3:
+			host, err := github.NormalizeHost(parts[0])
+			if err != nil {
+				return nil, fmt.Errorf("invalid target '%s': %w", target, err)
+			}
+			rec := store.FindByRepo(host, parts[1], parts[2])
+			if rec == nil {
+				return nil, errNoHistory(target)
+			}
+			return rec, nil
+		default:
 			return nil, fmt.Errorf("invalid target '%s'", target)
 		}
-		if r := store.FindByRepo(parts[0], parts[1]); r != nil {
-			return r, nil
-		}
-		return nil, fmt.Errorf("no history found for %q; use 'getRelease history list' to see installed binaries", target)
 	}
 
 	matches := store.FindByBinary(target)
@@ -231,7 +246,7 @@ func resolveUpgradeRecord(store *history.Store, target, ownerFlag, repoFlag stri
 
 	items := make([]string, len(matches))
 	for i, m := range matches {
-		items[i] = fmt.Sprintf("%s/%s %s (installed %s)", m.Owner, m.Repo, m.Tag, m.InstalledAt.Format("2006-01-02"))
+		items[i] = fmt.Sprintf("%s %s (installed %s)", packageLabel(m), m.Tag, m.InstalledAt.Format("2006-01-02"))
 	}
 	idx, err := selectItems(items, "Multiple history records match; choose one:")
 	if err != nil {
@@ -241,6 +256,33 @@ func resolveUpgradeRecord(store *history.Store, target, ownerFlag, repoFlag stri
 	return &r, nil
 }
 
+// findUniqueRecord returns the record for owner/repo on any host, failing when
+// the repository is recorded on several.
+func findUniqueRecord(store *history.Store, owner, repo string) (*history.Record, error) {
+	recs := store.FindAllByRepo(owner, repo)
+	switch len(recs) {
+	case 0:
+		return nil, errNoHistory(owner + "/" + repo)
+	case 1:
+		return &recs[0], nil
+	default:
+		return nil, ambiguousPackageError(recs, ambiguousTargetHint)
+	}
+}
+
+func errNoHistory(target string) error {
+	return fmt.Errorf("no history found for %q; use 'getRelease history list' to see installed binaries", target)
+}
+
+// packageLabel names a Package as owner/repo, prefixed with its host when that
+// is not github.com.
+func packageLabel(rec history.Record) string {
+	if strings.EqualFold(rec.EffectiveHost(), github.DefaultHost) {
+		return rec.Owner + "/" + rec.Repo
+	}
+	return rec.Host + "/" + rec.Owner + "/" + rec.Repo
+}
+
 func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConfig, rec *history.Record, dryRun bool, cds cooldownSettings) (bool, error) {
 	if rec == nil {
 		return false, errors.New("internal: no history record resolved")
@@ -248,7 +290,7 @@ func upgradeRecord(cmd *cobra.Command, store *history.Store, cfg *config.AppConf
 
 	owner := rec.Owner
 	repo := rec.Repo
-	policy := cds.policyFor(owner)
+	policy := cds.policyFor(hostOwner{host: rec.Host, owner: owner})
 
 	// Target the host the package was originally installed from (empty
 	// means github.com).

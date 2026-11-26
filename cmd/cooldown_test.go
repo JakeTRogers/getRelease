@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,18 +71,86 @@ func TestResolveCooldownSettingsWithoutFlag(t *testing.T) {
 }
 
 func TestCooldownPolicyFor(t *testing.T) {
-	settings := cooldownSettings{
-		days:          10,
-		source:        "config",
-		trustedOwners: []string{"OwnerX", "SomeoneElse"},
-		now:           func() time.Time { return cooldownTestNow },
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		trusted []string
+		repo    hostOwner
+		want    bool
+	}{
+		{name: "bare entry on github.com", trusted: []string{"JakeTRogers"}, repo: hostOwner{host: "github.com", owner: "JakeTRogers"}, want: true},
+		{name: "bare entry with empty host", trusted: []string{"JakeTRogers"}, repo: hostOwner{owner: "jaketrogers"}, want: true},
+		{name: "bare entry not on ghe host", trusted: []string{"JakeTRogers"}, repo: hostOwner{host: "acme.ghe.com", owner: "JakeTRogers"}, want: false},
+		{name: "untrusted owner", trusted: []string{"JakeTRogers"}, repo: hostOwner{host: "github.com", owner: "stranger"}, want: false},
+		{name: "ghe entry on its host", trusted: []string{"acme.ghe.com/acme"}, repo: hostOwner{host: "acme.ghe.com", owner: "acme"}, want: true},
+		{name: "ghe entry matches host case-insensitively", trusted: []string{"acme.ghe.com/acme"}, repo: hostOwner{host: "ACME.ghe.com", owner: "ACME"}, want: true},
+		{name: "ghe entry not on github.com", trusted: []string{"acme.ghe.com/acme"}, repo: hostOwner{host: "github.com", owner: "acme"}, want: false},
+		{name: "ghe entry not on other ghe host", trusted: []string{"acme.ghe.com/acme"}, repo: hostOwner{host: "other.ghe.com", owner: "acme"}, want: false},
+		{name: "github.com entry", trusted: []string{"github.com/JakeTRogers"}, repo: hostOwner{owner: "JakeTRogers"}, want: true},
+		{name: "uppercase github.com entry", trusted: []string{"GITHUB.COM/jaketrogers"}, repo: hostOwner{host: "github.com", owner: "JakeTRogers"}, want: true},
+		{name: "www.github.com entry", trusted: []string{"www.github.com/JakeTRogers"}, repo: hostOwner{host: "github.com", owner: "JakeTRogers"}, want: true},
+		{name: "github.com entry not on ghe host", trusted: []string{"github.com/JakeTRogers"}, repo: hostOwner{host: "acme.ghe.com", owner: "JakeTRogers"}, want: false},
 	}
 
-	if got := settings.policyFor("ownerx"); got.days != 0 {
-		t.Fatalf("policyFor(ownerx) days = %d, want 0 for case-insensitive trusted owner", got.days)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			settings := resolveCooldownSettings(&cobra.Command{}, &config.AppConfig{Cooldown: 10, TrustedOwners: tt.trusted})
+			got := settings.policyFor(tt.repo)
+			if trusted := got.days == 0; trusted != tt.want {
+				t.Fatalf("policyFor(%+v) with trustedOwners %q days = %d, want trusted = %v", tt.repo, tt.trusted, got.days, tt.want)
+			}
+		})
 	}
-	if got := settings.policyFor("stranger"); got.days != 10 {
-		t.Fatalf("policyFor(stranger) days = %d, want 10", got.days)
+}
+
+// captureWarnLogs routes the default slog logger to a buffer at warn level
+// for the rest of the test. It swaps a global, so callers must run serially.
+func captureWarnLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	oldLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	return &logs
+}
+
+func TestResolveCooldownSettingsIgnoresInvalidTrustedOwners(t *testing.T) {
+	logs := captureWarnLogs(t)
+
+	invalid := []string{"a/b/c", "/owner", "acme.ghe.com/", "example.com/owner", "  "}
+	cmd := &cobra.Command{}
+	settings := resolveCooldownSettings(cmd, &config.AppConfig{Cooldown: 10, TrustedOwners: append(invalid, "cli")})
+
+	repos := []hostOwner{
+		{"github.com", "a"}, {"github.com", "b"}, {"github.com", "c"}, {"github.com", "owner"},
+		{"acme.ghe.com", ""}, {"acme.ghe.com", "acme"}, {"example.com", "owner"}, {"github.com", ""},
+	}
+	for _, repo := range repos {
+		if got := settings.policyFor(repo); got.days != 10 {
+			t.Fatalf("policyFor(%+v) days = %d, want 10: invalid entries must not exempt anything", repo, got.days)
+		}
+	}
+	if got := settings.policyFor(hostOwner{host: "github.com", owner: "cli"}); got.days != 0 {
+		t.Fatalf("policyFor(github.com, cli) days = %d, want 0: valid entry alongside invalid ones must still apply", got.days)
+	}
+	if got := strings.Count(logs.String(), "ignoring invalid trustedOwners entry"); got != len(invalid) {
+		t.Fatalf("logged %d invalid-entry warnings, want %d; logs:\n%s", got, len(invalid), logs.String())
+	}
+}
+
+func TestCooldownPolicyForInvalidHostWarnsAndEnforcesCooldown(t *testing.T) {
+	logs := captureWarnLogs(t)
+
+	settings := resolveCooldownSettings(&cobra.Command{}, &config.AppConfig{Cooldown: 10})
+	if got := settings.policyFor(hostOwner{host: "example.com", owner: "cli"}); got.days != 10 {
+		t.Fatalf("policyFor(example.com, cli) days = %d, want 10: an unverifiable host must keep the cooldown", got.days)
+	}
+	if !strings.Contains(logs.String(), "enforcing cooldown") || !strings.Contains(logs.String(), "host=example.com") {
+		t.Fatalf("logs = %q, want a warning naming host example.com", logs.String())
 	}
 }
 
@@ -108,6 +177,31 @@ func TestCooldownCheckRelease(t *testing.T) {
 
 	if err := policy.checkRelease(&github.Release{TagName: "v1.3.0", PublishedAt: cooldownTestNow.Add(48 * time.Hour)}); err == nil {
 		t.Fatal("checkRelease(future timestamp) error = nil, want blocked")
+	}
+}
+
+func TestCooldownCheckReleaseTrustedOwnersHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		repo hostOwner
+		want string
+	}{
+		{name: "github.com suggests bare owner", repo: hostOwner{owner: "cli"}, want: `add "cli" to trustedOwners`},
+		{name: "ghe host suggests host/owner entry", repo: hostOwner{host: "ACME.ghe.com", owner: "acme"}, want: `add "acme.ghe.com/acme" to trustedOwners`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			settings := resolveCooldownSettings(&cobra.Command{}, &config.AppConfig{Cooldown: 10})
+			err := settings.policyFor(tt.repo).checkRelease(&github.Release{TagName: "v1.1.0", PublishedAt: time.Now().Add(-2 * 24 * time.Hour)})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("checkRelease() error = %v, want hint %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -389,6 +483,47 @@ func TestRunRootCooldownTrustedOwnerInstallsFreshRelease(t *testing.T) {
 	}
 }
 
+func TestRunRootCooldownTrustedOwnerScopedToHost(t *testing.T) {
+	tests := []struct {
+		name    string
+		trusted []string
+		wantErr string
+	}{
+		{name: "bare entry does not trust ghe owner", trusted: []string{"cli"}, wantErr: `add "acme.ghe.com/cli" to trustedOwners`},
+		{name: "host/owner entry trusts ghe owner", trusted: []string{"acme.ghe.com/cli"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var listCalls int
+			client := newCooldownRootFixture(t, &listCalls)
+			cmd := setupCooldownRootTest(t, client, 10)
+			cfgViper.Set("trustedOwners", tt.trusted)
+			for flag, value := range map[string]string{"host": "acme.ghe.com", "tag": "v1.4.0"} {
+				if err := cmd.Flags().Set(flag, value); err != nil {
+					t.Fatalf("set %s: %v", flag, err)
+				}
+			}
+			cmd.SetOut(&bytes.Buffer{})
+
+			err := runRoot(cmd, nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("runRoot() error = %v, want cooldown block with hint %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runRoot() error: %v", err)
+			}
+			records := loadHistoryRecords(t)
+			if len(records) != 1 || records[0].Tag != "v1.4.0" || records[0].Host != "acme.ghe.com" {
+				t.Fatalf("history records = %+v, want fresh v1.4.0 install from acme.ghe.com", records)
+			}
+		})
+	}
+}
+
 func TestRunRootCooldownBlocksReuploadedAsset(t *testing.T) {
 	var listCalls int
 	client := newCooldownRootFixture(t, &listCalls)
@@ -469,7 +604,7 @@ func TestResolveUpgradeReleaseCooldownFallback(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor("cli"))
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor(hostOwner{owner: "cli"}))
 	if err != nil {
 		t.Fatalf("resolveUpgradeRelease() error: %v", err)
 	}
@@ -499,7 +634,7 @@ func TestResolveUpgradeReleaseCooldownAlreadyAtNewestEligible(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor("cli"))
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor(hostOwner{owner: "cli"}))
 	if err != nil {
 		t.Fatalf("resolveUpgradeRelease() error: %v", err)
 	}
@@ -532,7 +667,7 @@ func TestResolveUpgradeReleaseCooldownNonSemverNoDowngrade(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor("cli"))
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor(hostOwner{owner: "cli"}))
 	if err != nil {
 		t.Fatalf("resolveUpgradeRelease() error: %v", err)
 	}
@@ -559,7 +694,7 @@ func TestResolveUpgradeReleaseCooldownNothingEligible(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	_, _, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor("cli"))
+	_, _, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor(hostOwner{owner: "cli"}))
 	if err == nil || !strings.Contains(err.Error(), "satisfies the 10-day cooldown") {
 		t.Fatalf("resolveUpgradeRelease() error = %v, want no-eligible-release error", err)
 	}
@@ -580,7 +715,7 @@ func TestResolveUpgradeReleasePinMinorBlockedByCooldown(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor("cli"))
+	release, unchanged, err := resolveUpgradeRelease(cmd, client, rec, cooldownUpgradeSettings(10).policyFor(hostOwner{owner: "cli"}))
 	if err != nil {
 		t.Fatalf("resolveUpgradeRelease() error: %v", err)
 	}
@@ -592,9 +727,59 @@ func TestResolveUpgradeReleasePinMinorBlockedByCooldown(t *testing.T) {
 	}
 }
 
-func TestUpgradeRecordCooldownBlocksReuploadedAsset(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+// setupCooldownUpgradeTest swaps in client and a fresh test config, applies
+// configure to cfgViper, and returns the loaded config, a command capturing
+// output in out, and an empty history store. It swaps package-level seams, so
+// callers must run serially.
+func setupCooldownUpgradeTest(t *testing.T, client releaseClient, configure func()) (*config.AppConfig, *cobra.Command, *bytes.Buffer, *history.Store) {
+	t.Helper()
 
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	useTestCommandDeps(t, client)
+	setTestConfig(filepath.Join(t.TempDir(), "downloads"), filepath.Join(t.TempDir(), "bin"))
+	configure()
+	cfg, err := config.Load(cfgViper)
+	if err != nil {
+		t.Fatalf("config.Load() error: %v", err)
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	return cfg, cmd, &out, history.NewStore(filepath.Join(t.TempDir(), "history.json"))
+}
+
+func TestUpgradeRecordCooldownTrustedOwnerScopedToHost(t *testing.T) {
+	tests := []struct {
+		name         string
+		host         string
+		wantFallback bool
+	}{
+		{name: "github.com package trusted by bare entry", host: "", wantFallback: false},
+		{name: "ghe package not trusted by bare entry", host: "acme.ghe.com", wantFallback: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var listCalls int
+			cfg, cmd, out, store := setupCooldownUpgradeTest(t, newCooldownRootFixture(t, &listCalls), func() {
+				cfgViper.Set("cooldown", 10)
+				cfgViper.Set("trustedOwners", []string{"cli"})
+			})
+			rec := newHistoryRecord("id-1", "cli", "tool", "v1.2.0", "tool_linux_amd64", "tool", "/usr/local/bin/tool")
+			rec.Host = tt.host
+
+			if _, err := upgradeRecord(cmd, store, cfg, &rec, true, resolveCooldownSettings(cmd, cfg)); err != nil {
+				t.Fatalf("upgradeRecord() error: %v", err)
+			}
+			if got := strings.Contains(out.String(), "falling back to v1.3.2"); got != tt.wantFallback {
+				t.Fatalf("upgradeRecord() output = %q, want cooldown fallback = %v", out.String(), tt.wantFallback)
+			}
+		})
+	}
+}
+
+func TestUpgradeRecordCooldownBlocksReuploadedAsset(t *testing.T) {
 	client := &fakeReleaseClient{
 		getLatestRelease: func(_, _ string) (*github.Release, error) {
 			return &github.Release{
@@ -608,22 +793,11 @@ func TestUpgradeRecordCooldownBlocksReuploadedAsset(t *testing.T) {
 			}, nil
 		},
 	}
-	useTestCommandDeps(t, client)
-	setTestConfig(filepath.Join(t.TempDir(), "downloads"), filepath.Join(t.TempDir(), "bin"))
-
-	cfg, err := config.Load(cfgViper)
-	if err != nil {
-		t.Fatalf("config.Load() error: %v", err)
-	}
-
+	cfg, cmd, _, store := setupCooldownUpgradeTest(t, client, func() {})
 	rec := newHistoryRecord("id-1", "cli", "tool", "v1.2.0", "tool_linux_amd64", "tool", "/usr/local/bin/tool")
 
-	cmd := &cobra.Command{}
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-
 	// Dry-run must also refuse: the check runs before the dry-run branch.
-	_, err = upgradeRecord(cmd, history.NewStore(filepath.Join(t.TempDir(), "history.json")), cfg, &rec, true, cooldownUpgradeSettings(10))
+	_, err := upgradeRecord(cmd, store, cfg, &rec, true, cooldownUpgradeSettings(10))
 	if err == nil || !strings.Contains(err.Error(), "tampering") {
 		t.Fatalf("upgradeRecord() error = %v, want asset tamper refusal", err)
 	}

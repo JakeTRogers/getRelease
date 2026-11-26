@@ -58,6 +58,7 @@ func useTestCommandDeps(t *testing.T, client releaseClient) {
 	oldSelect := selectItems
 	oldConfirm := confirmAction
 	oldInstaller := newBinaryInstaller
+	oldRemove := removeFile
 	oldViper := cfgViper
 
 	if client != nil {
@@ -79,6 +80,7 @@ func useTestCommandDeps(t *testing.T, client releaseClient) {
 		selectItems = oldSelect
 		confirmAction = oldConfirm
 		newBinaryInstaller = oldInstaller
+		removeFile = oldRemove
 		cfgViper = oldViper
 	})
 }
